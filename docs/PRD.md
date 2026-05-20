@@ -6,14 +6,20 @@
 
 ## 1. Summary
 
-`youtube-skill-fetch` is a local-first pipeline that turns a YouTube creator's
-playlist into a reusable Claude Skill (`SKILL.md`). It captures *how* a creator
-thinks about their domain — their recurring patterns, heuristics, and moves —
-so that Claude can apply that style on demand.
+`youtube-skill-fetch` is an **open-source, local-first** pipeline that turns
+a YouTube creator's playlist into a reusable Claude Skill (`SKILL.md`). It
+captures *how* a creator thinks about their domain — their recurring
+patterns, heuristics, and moves — so that Claude can apply that style on
+demand.
 
 Mechanical work (downloading, captioning, OCR) runs locally and free via
 `yt-dlp`, `ffmpeg`, `tesseract`, and optionally Whisper. Only the
 distillation and synthesis steps use Claude.
+
+**Distribution model.** This project is distributed **only as source code
+on GitHub** under Apache-2.0. There is no hosted service, paid tier, or
+managed offering, and none is planned within this PRD. Users clone the
+repo and run it locally against playlists they are entitled to use.
 
 ## 2. Problem
 
@@ -40,11 +46,14 @@ loses the cross-video patterns that make the creator's approach distinctive.
 
 ## 4. Non-goals
 
+- **Any hosted service, website, paid tier, SaaS, or commercial offering.**
+  This project is OSS code on GitHub only; users self-host and self-operate.
 - Real-time / streaming ingestion.
-- A hosted service, web UI, or multi-user system.
+- A web UI or multi-user system.
 - Fine-tuning a model. The output is a skill prompt, not weights.
 - Scraping content the user is not entitled to use.
 - Bit-for-bit reproduction of a creator's voice; the goal is method, not mimicry.
+- Revenue, monetization, or any pricing model.
 
 ## 5. Users & use cases
 
@@ -144,11 +153,14 @@ A short pre-flight that the rest of the pipeline reads from
 | `stats`             | run     | skip (local analyzer) | skip          | skip            | `stats.json` / `stats.md` |
 | `quote-mining`      | run     | quote-extract prompt | merge + dedupe | skip            | `quotes.md`              |
 
-## 8. Estimated cost
+## 8. Estimated cost (to the user running it)
 
-Phase 1 is free (local CPU/disk). Claude cost is dominated by Phase 2 and
-scales linearly with playlist size. Estimates assume ~15 min videos with
-~2k word transcripts (~3k input tokens each, ~1k output JSON).
+This is what a **self-hosting user** pays out of their own pocket. The
+project itself has no revenue, no servers, and no per-user cost.
+
+Phase 1 is free (local CPU/disk). Claude API cost is dominated by Phase 2
+and scales linearly with playlist size. Estimates assume ~15 min videos
+with ~2k word transcripts (~3k input tokens each, ~1k output JSON).
 
 | Playlist size | Total in | Total out | Sonnet 4.6 (~$3/M in, $15/M out) | Opus 4.7 (~$15/M in, $75/M out) |
 | ------------- | -------- | --------- | -------------------------------- | ------------------------------- |
@@ -200,11 +212,16 @@ distilled/<playlist>/quotes.md                     # intent=quote-mining
 
 ## 12. Compliance & legal
 
-This pipeline ingests third-party content. The defaults are intentionally
-conservative; operators are responsible for their own use.
+This project is distributed as **source code only** on GitHub under
+Apache-2.0. The maintainers do not ingest, host, or redistribute any
+third-party content. Every user runs the pipeline locally on their own
+machine, and each user is solely responsible for their own compliance.
 
 - **Scope.** Personal research, learning, and creator-authorized use only.
   Not for redistribution or commercial repackaging of source material.
+- **No hosted offering.** There is no website, SaaS, or paid tier. If a
+  third party builds one, they do so independently and assume their own
+  legal responsibility.
 - **YouTube ToS.** Downloading via `yt-dlp` falls outside YouTube's
   sanctioned playback flow. Operators must verify they are entitled to
   download the target playlist (own content, Creative Commons, explicit
