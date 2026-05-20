@@ -1,0 +1,63 @@
+name: Prompt improvement
+description: Suggest a better prompt for Phase 2, 3, 4, or eval
+labels: ["prompt"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Prompts are the highest-leverage thing in this project. Please share
+        your before/after, ideally with a small concrete example.
+
+        **Do not paste third-party transcripts.** Use your own content or a
+        CC-licensed source for the before/after.
+
+  - type: dropdown
+    id: prompt
+    attributes:
+      label: Which prompt?
+      options:
+        - prompts/02_distill_video.md
+        - prompts/02_summary.md
+        - prompts/02_topical_extract.md
+        - prompts/03_synthesize.md
+        - prompts/03_summary_rollup.md
+        - prompts/04_author_skill.md
+        - prompts/04_topical_report.md
+        - prompts/05_eval_rubric.md
+        - Other (please specify)
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-output
+    attributes:
+      label: What's wrong with the current output?
+      description: Be specific — vague comments aren't actionable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed prompt change
+      description: |
+        Either the full new prompt or a diff. Include rationale for each change.
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Before/after on a sample input
+      description: |
+        A small input (own/CC content only), the current output, and the
+        new output. This is the single most important field.
+
+  - type: checkboxes
+    id: rights
+    attributes:
+      label: Compliance
+      options:
+        - label: My example inputs are own-content or Creative Commons.
+          required: true

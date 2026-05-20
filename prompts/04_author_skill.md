@@ -27,6 +27,7 @@ active method.
 ---
 name: <playlist-slug>-<mode-lowercase>
 description: <one sentence: when Claude should invoke this skill>
+version: <will be set by run_phase4.py — leave as "{{VERSION}}">
 ---
 
 # <Creator>'s <domain> — <Mode> skill
@@ -55,3 +56,7 @@ Rules:
   <300 lines.
 - Every heuristic in "Core method" must trace back to a `core` or `strong` item
   in the synthesis JSON. Do not invent.
+- The body of SKILL.md must NOT contain `[video_NN @ MM:SS]` citation markers.
+  Citations live in the separate citations.md sidecar so readers get a clean
+  Skill. Reference creator behaviour in plain language ("the creator opens with
+  a question") without per-claim source markers.

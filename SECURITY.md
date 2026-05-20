@@ -5,8 +5,10 @@
 If you believe you have found a security vulnerability in
 `youtube-skill-fetch`, please report it privately.
 
-- **Email:** add a contact address here before publishing the repo.
-- **Subject line:** `[security] <short description>`
+- **Preferred:** use **GitHub Private Vulnerability Reporting** via the
+  [Security tab](https://github.com/RahulSunnyCS/youtube-skill-fetch/security)
+  → "Report a vulnerability." This is the recommended channel — no
+  email exchange required, and GitHub handles the workflow.
 - Please do **not** open a public GitHub issue for security problems.
 
 Include in your report:

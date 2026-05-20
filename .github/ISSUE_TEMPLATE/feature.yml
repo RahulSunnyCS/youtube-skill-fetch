@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a new capability or workflow
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you solving?
+      description: The user need, in plain language.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Concrete shape of the feature. Bullet points are fine.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope check
+      description: |
+        This project is local-first and OSS only (no hosted offering — see PRD §4).
+      options:
+        - "My request fits within local-first, OSS scope."
+        - "Not sure — I'd like feedback on fit before building."
+        - "I'm requesting a hosted/SaaS feature (will be declined per PRD §4)."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you try or think about? Why didn't those work?
+
+  - type: checkboxes
+    id: willingness
+    attributes:
+      label: Implementation
+      options:
+        - label: I'd be willing to implement this myself with guidance.
+        - label: I'm just proposing — looking for someone else to build it.

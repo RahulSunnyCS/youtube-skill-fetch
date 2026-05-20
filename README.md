@@ -253,23 +253,39 @@ Open `distilled/mycreator/video_01.json` to spot-check the extraction
 (it uses short keys; `python scripts/expand_schema.py
 distilled/mycreator/video_01.json` pretty-prints to verbose form).
 
-**Step 6 & 7: synthesize and author the Skill.** Phase 3 (cross-video
-patterns) and Phase 4 (write `SKILL.md`) are documented in the PRD; their
-orchestrator scripts (`run_phase3.py`, `run_phase4.py`) are next on the
-roadmap — see [`todo.md`](todo.md). Until they ship, run them via
-copy-paste:
+**Step 6: synthesize across videos.**
 
-1. Concatenate every `distilled/mycreator/video_*.json`, paste into
-   Claude with `prompts/03_synthesize.md`, save the response to
-   `distilled/mycreator/synthesis.json`.
-2. Eyeball `synthesis.json` — the **human review gate**. Confirm the
-   recurring patterns look right before paying for Phase 4.
-3. Pick a mode (`Teacher` / `Reviewer` / `Advisor`), paste
-   `synthesis.json` into Claude with `prompts/04_author_skill.md`, save
-   as `distilled/mycreator/SKILL.md`.
+```
+make phase3 PLAYLIST_NAME=mycreator
+```
+
+Writes `distilled/mycreator/synthesis.json`. **Eyeball it** — this is
+the human review gate. Confirm the recurring patterns look right
+before paying for Phase 4.
+
+**Step 7: author the Skill.**
+
+```
+make phase4 PLAYLIST_NAME=mycreator SKILL_MODE=Teacher
+```
+
+Writes a versioned, citation-free `SKILL.md`, updates `CHANGELOG.md`,
+and regenerates `citations.md` (the sidecar that maps every claim back
+to a video and timestamp). Re-running bumps the version and backs up
+the previous SKILL.md.
 
 You now have a Skill. Load it into Claude (via Claude Code, claude.ai
 Projects, or the API) and it will answer in the creator's method.
+
+**Optional Step 8: evaluate the Skill.**
+
+```
+make eval PLAYLIST_NAME=mycreator
+```
+
+Hold-one-out scoring: the last video is withheld and Claude is asked
+to predict its content using only the SKILL.md. Result lands in
+`distilled/mycreator/score.json`.
 
 ---
 
@@ -299,13 +315,16 @@ compound interest?" — without watching all 40 videos.
 }
 ```
 
-**Steps 5–7** will run a targeted extraction (only statements relevant to
-the question), deduplicate them, cluster, and write `report.md` plus a
-rendered `report.pdf` with citations.
+**Step 5: run the topical pipeline.**
 
-> **Status:** the `topical-report` runtime path is on the roadmap
-> ([`todo.md`](todo.md) item 5). The PRD specifies the full design;
-> shipping is next.
+```
+make topical PLAYLIST_NAME=mycreator
+```
+
+This calls the targeted extraction prompt on each cleaned transcript
+(only statements relevant to the question), then writes
+`distilled/mycreator/report.md` plus a `citations.md` sidecar. If
+`pandoc` is installed, a `report.pdf` is rendered too.
 
 ---
 

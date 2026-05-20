@@ -58,6 +58,20 @@ def find_inputs(playlist_dir: Path) -> list[tuple[str, Path]]:
     return pairs
 
 
+# Compact-schema short keys. If Claude returns verbose keys (heuristics
+# vs h), we re-prompt once with a stricter instruction before accepting.
+_COMPACT_TOP_KEYS = {"t", "cc", "h", "rp", "emph", "dis", "v"}
+_VERBOSE_TOP_KEYS = {
+    "video_title", "core_claims", "heuristics", "reasoning_patterns",
+    "what_they_emphasize", "what_they_dismiss", "vocabulary",
+}
+
+
+def _is_verbose_schema(data: dict) -> bool:
+    top = set(data.keys())
+    return bool(top & _VERBOSE_TOP_KEYS) and not bool(top & _COMPACT_TOP_KEYS)
+
+
 def distill_one(
     client: ClaudeClient,
     system_prompt: str,
@@ -71,21 +85,61 @@ def distill_one(
         return (video_id, True, "skipped (already exists)")
 
     transcript_text = transcript.read_text()
+    user_msg = f"Video ID: {video_id}\n\nTranscript:\n\n{transcript_text}"
+
     result = client.complete(
         system=system_prompt,
-        user=f"Video ID: {video_id}\n\nTranscript:\n\n{transcript_text}",
+        user=user_msg,
         cache_system=True,
     )
     with lock:
         accumulator.record(phase="phase2", result=result)
 
+    # Try to parse as JSON. If malformed OR verbose-schema, re-prompt once.
+    parsed: dict | None = None
+    notes: list[str] = []
     try:
-        json.loads(result.text)
-        out_path.write_text(result.text)
-        return (video_id, True, f"ok ({result.output_tokens} out tokens)")
+        parsed = json.loads(result.text)
     except json.JSONDecodeError:
+        notes.append("first call returned non-JSON")
+
+    needs_retry = parsed is None or (isinstance(parsed, dict) and _is_verbose_schema(parsed))
+    if needs_retry:
+        retry_system = system_prompt + (
+            "\n\nIMPORTANT REMINDER: Return ONLY a single JSON object using the "
+            "COMPACT short keys exactly (t, cc, h, rp, emph, dis, v). Do not "
+            "use verbose names like 'heuristics' or 'core_claims'. No prose, "
+            "no markdown code fence."
+        )
+        result2 = client.complete(
+            system=retry_system,
+            user=user_msg,
+            cache_system=False,  # different system text; don't cache the retry
+        )
+        with lock:
+            accumulator.record(phase="phase2", result=result2)
+        try:
+            parsed2 = json.loads(result2.text)
+            if isinstance(parsed2, dict) and not _is_verbose_schema(parsed2):
+                parsed = parsed2
+                result = result2
+                notes.append("retry succeeded with compact schema")
+            elif isinstance(parsed2, dict):
+                parsed = parsed2  # still verbose, but at least JSON
+                result = result2
+                notes.append("retry still verbose-schema; accepting")
+        except json.JSONDecodeError:
+            notes.append("retry also non-JSON")
+
+    if parsed is None:
         out_path.with_suffix(".raw.txt").write_text(result.text)
-        return (video_id, False, "non-JSON response; saved as .raw.txt")
+        return (video_id, False, "non-JSON response after retry; saved as .raw.txt")
+
+    out_path.write_text(json.dumps(parsed, ensure_ascii=False))
+    msg = f"ok ({result.output_tokens} out tokens)"
+    if notes:
+        msg += f"  [{'; '.join(notes)}]"
+    return (video_id, True, msg)
 
 
 def main() -> int:

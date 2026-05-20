@@ -1,8 +1,14 @@
 # Cross-video synthesis prompt (Phase 3, "reduce")
 
 You will receive an array of per-video distillation JSONs (one per video in the
-playlist). Your job is to find the creator's CORE METHOD — the patterns that
-recur across videos — and discard one-offs.
+playlist), using the compact short-key schema (`h`, `cc`, `rp`, etc — see
+`prompts/schema.md`). Your job is to find the creator's CORE METHOD — the
+patterns that recur across videos — and discard one-offs.
+
+**Citation requirement.** Every recurring heuristic / pattern / emphasis you
+include in the output MUST list `support_videos` (a list of video IDs like
+`video_03`, `video_07`). If you cannot find ≥2 videos supporting a pattern,
+move it to `discarded_one_offs`. Do not invent support.
 
 Return ONLY a single JSON object with this exact shape:
 

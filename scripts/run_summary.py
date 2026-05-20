@@ -1,0 +1,139 @@
+"""
+Summary intent orchestrator.
+
+Lightweight version of method-distillation:
+  - Phase 2: per-video summary via prompts/02_summary.md (Haiku by default)
+  - Phase 3: playlist-level rollup via prompts/03_summary_rollup.md
+
+Outputs:
+  distilled/<playlist>/summary/video_NN.json
+  distilled/<playlist>/summary.md
+
+Usage:
+    python scripts/run_summary.py --playlist <name>
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import json
+import sys
+import threading
+from pathlib import Path
+
+import scope as scope_module
+from accounting import CostAccumulator
+from claude_client import ClaudeClient
+
+
+P2_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "02_summary.md"
+P3_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "03_summary_rollup.md"
+
+
+def _find_inputs(playlist_dir: Path) -> list[tuple[str, Path]]:
+    out = []
+    for vd in sorted(playlist_dir.glob("video_*")):
+        if not vd.is_dir():
+            continue
+        vid = "_".join(vd.name.split("_")[:2])
+        clean = vd / "transcript.clean.txt"
+        raw = vd / "transcript.txt"
+        chosen = clean if clean.exists() else raw if raw.exists() else None
+        if chosen:
+            out.append((vid, chosen))
+    return out
+
+
+def _summary_one(client, sys_prompt, vid, transcript, out_dir, acc, lock):
+    out_path = out_dir / f"{vid}.json"
+    if out_path.exists():
+        return (vid, True, "skipped")
+    res = client.complete(
+        system=sys_prompt,
+        user=f"Video ID: {vid}\n\nTranscript:\n\n{transcript.read_text()}",
+        cache_system=True,
+    )
+    with lock:
+        acc.record(phase="phase2_summary", result=res)
+    text = res.text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+    try:
+        data = json.loads(text)
+        out_path.write_text(json.dumps(data, ensure_ascii=False))
+        return (vid, True, "ok")
+    except json.JSONDecodeError:
+        out_path.with_suffix(".raw.txt").write_text(res.text)
+        return (vid, False, "non-JSON; .raw.txt")
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--playlist", required=True)
+    p.add_argument("--output-root", default="output")
+    p.add_argument("--distilled-root", default="distilled")
+    p.add_argument("--concurrency", type=int, default=4)
+    args = p.parse_args()
+
+    distilled_root = Path(args.distilled_root)
+    distilled_dir = distilled_root / args.playlist
+    distilled_dir.mkdir(parents=True, exist_ok=True)
+    summary_dir = distilled_dir / "summary"
+    summary_dir.mkdir(exist_ok=True)
+
+    scope = scope_module.load(distilled_root, args.playlist)
+    model2 = scope.model_for("phase2")
+    model3 = scope.model_for("phase3")
+
+    inputs = _find_inputs(Path(args.output_root) / args.playlist)
+    if not inputs:
+        sys.exit("No transcripts found.")
+
+    p2_sys = P2_PROMPT.read_text()
+    client2 = ClaudeClient(model=model2)
+    acc = CostAccumulator(playlist=args.playlist)
+    lock = threading.Lock()
+
+    print(f"Phase 2 (summary): model={model2}, {len(inputs)} videos")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+        futs = [
+            pool.submit(_summary_one, client2, p2_sys, vid, t, summary_dir, acc, lock)
+            for vid, t in inputs
+        ]
+        for f in concurrent.futures.as_completed(futs):
+            vid, ok, msg = f.result()
+            print(f"  {'✓' if ok else '✗'} {vid}: {msg}")
+
+    # Rollup
+    per_video = []
+    for jf in sorted(summary_dir.glob("video_*.json")):
+        try:
+            per_video.append(json.loads(jf.read_text()))
+        except json.JSONDecodeError:
+            continue
+    if not per_video:
+        sys.exit("No per-video summaries to roll up.")
+
+    p3_sys = P3_PROMPT.read_text()
+    client3 = ClaudeClient(model=model3, max_tokens=4096)
+    print(f"\nPhase 3 (rollup): model={model3}")
+    res = client3.complete(
+        system=p3_sys,
+        user="Per-video summaries:\n\n" + json.dumps(per_video, ensure_ascii=False),
+        cache_system=True,
+    )
+    acc.record(phase="phase3_summary", result=res)
+    body = res.text.strip()
+    if body.startswith("```"):
+        body = body.split("\n", 1)[1].rsplit("```", 1)[0]
+
+    (distilled_dir / "summary.md").write_text(body)
+    acc.write(distilled_dir / "cost.json")
+    print(f"\nDone. Wrote {distilled_dir / 'summary.md'}")
+    print(f"Estimated cost: ${acc.running_total():.4f}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
