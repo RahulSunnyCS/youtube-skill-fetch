@@ -162,34 +162,201 @@ export ANTHROPIC_API_KEY=sk-...
 
 ## How to run it
 
-The simplest path (one video, sanity check):
+There are two end-to-end examples below. Pick the one that matches what
+you want. Both assume you've done the setup above.
+
+### Example A — Build a Skill that thinks like a creator
+
+**Scenario:** You follow a creator who runs a CC-licensed conference talk
+playlist. You want a Claude Skill that gives advice in their style.
+
+**Step 1: sanity-check one video.**
 
 ```
-make test1 PLAYLIST="<your-playlist-url>"
+make test1 PLAYLIST="https://youtube.com/playlist?list=<id>" PLAYLIST_NAME=mycreator
 ```
 
-Look inside `output/<playlist>/video_01_*/transcript.txt` and make sure
-the transcript looks correct.
+This downloads one video's captions to
+`output/mycreator/video_01_*/transcript.txt`. Open it and skim — make
+sure it looks like real text from the talk.
 
-Then the full playlist:
-
-```
-make extract PLAYLIST="<your-playlist-url>"
-```
-
-For Phases 2–4 (the Claude steps), you have **two options**:
-
-**Option A — Programmatic (recommended).** Single command per phase:
+**Step 2: extract the full playlist.**
 
 ```
-python scripts/run_phase2.py --playlist <name>     # distill every video
-# (Phase 3 + Phase 4 scripts coming next)
+make extract PLAYLIST="https://youtube.com/playlist?list=<id>" PLAYLIST_NAME=mycreator
 ```
 
-**Option B — Copy-paste.** Open `prompts/02_distill_video.md`, paste
-the transcript and the prompt into Claude, save the JSON. Repeat for
-each video. Then do the same for `prompts/03_synthesize.md` and
-`prompts/04_author_skill.md`. Slower but needs no API key.
+When this finishes you'll have 40-ish `transcript.txt` files under
+`output/mycreator/`.
+
+**Step 3: clean the transcripts.** This strips filler ("um", "you
+know"), sponsor reads, intros/outros, and repeats. It runs locally and
+typically removes ~30–50% of the text *before* anything goes to Claude,
+which saves you ~30–50% on the next step's cost.
+
+```
+make preprocess PLAYLIST_NAME=mycreator
+```
+
+Each video now has a `transcript.clean.txt` and a `preprocess.json`
+showing what was cut. If the cuts look too aggressive, re-run with
+`--no-sponsor-detect` or `--intro-sec 10`.
+
+**Step 4: configure intent (write `scope.json`).** Until the interactive
+scoper ships, drop this file at `distilled/mycreator/scope.json`:
+
+```json
+{
+  "intent": "method-distillation",
+  "language": "auto",
+  "depth": "standard",
+  "themes": [],
+  "question": "",
+  "target_audience": "personal",
+  "models": {
+    "phase2": "claude-haiku-4-5-20251001",
+    "phase3": "claude-sonnet-4-6",
+    "phase4": "claude-sonnet-4-6"
+  }
+}
+```
+
+**Step 5: distill each video (Phase 2).** This is the first step that
+uses Claude. The defaults use Haiku to keep cost low.
+
+```
+python scripts/run_phase2.py --playlist mycreator
+```
+
+You'll see live progress and a running total:
+
+```
+Phase 2: model=claude-haiku-4-5-20251001, intent=method-distillation, 40 videos, concurrency=4
+  ✓ video_01: ok (820 out tokens)  [running total: $0.0034]
+  ✓ video_02: ok (760 out tokens)  [running total: $0.0067]
+  ...
+Phase 2 done. Estimated cost: $0.1240
+Cost breakdown: distilled/mycreator/cost.json
+```
+
+Open `distilled/mycreator/video_01.json` to spot-check the extraction
+(it uses short keys; `python scripts/expand_schema.py
+distilled/mycreator/video_01.json` pretty-prints to verbose form).
+
+**Step 6 & 7: synthesize and author the Skill.** Phase 3 (cross-video
+patterns) and Phase 4 (write `SKILL.md`) are documented in the PRD; their
+orchestrator scripts (`run_phase3.py`, `run_phase4.py`) are next on the
+roadmap — see [`todo.md`](todo.md). Until they ship, run them via
+copy-paste:
+
+1. Concatenate every `distilled/mycreator/video_*.json`, paste into
+   Claude with `prompts/03_synthesize.md`, save the response to
+   `distilled/mycreator/synthesis.json`.
+2. Eyeball `synthesis.json` — the **human review gate**. Confirm the
+   recurring patterns look right before paying for Phase 4.
+3. Pick a mode (`Teacher` / `Reviewer` / `Advisor`), paste
+   `synthesis.json` into Claude with `prompts/04_author_skill.md`, save
+   as `distilled/mycreator/SKILL.md`.
+
+You now have a Skill. Load it into Claude (via Claude Code, claude.ai
+Projects, or the API) and it will answer in the creator's method.
+
+---
+
+### Example B — Answer a question with a topical PDF report
+
+**Scenario:** You want to know "what does this creator think about
+compound interest?" — without watching all 40 videos.
+
+**Steps 1–3** are the same as Example A (extract + preprocess).
+
+**Step 4: set intent to `topical-report` with your question.**
+`distilled/mycreator/scope.json`:
+
+```json
+{
+  "intent": "topical-report",
+  "language": "auto",
+  "depth": "standard",
+  "themes": [],
+  "question": "What does the creator say about compound interest and long-term investing?",
+  "target_audience": "personal",
+  "models": {
+    "phase2": "claude-haiku-4-5-20251001",
+    "phase3": "claude-sonnet-4-6",
+    "phase4": "claude-sonnet-4-6"
+  }
+}
+```
+
+**Steps 5–7** will run a targeted extraction (only statements relevant to
+the question), deduplicate them, cluster, and write `report.md` plus a
+rendered `report.pdf` with citations.
+
+> **Status:** the `topical-report` runtime path is on the roadmap
+> ([`todo.md`](todo.md) item 5). The PRD specifies the full design;
+> shipping is next.
+
+---
+
+### Example C — Just find every quote about a topic ($0)
+
+**Scenario:** You don't need a Skill or a report — you just want every
+place the creator says "passive income" or "index funds," with
+timestamps.
+
+**Steps 1–3** same as Example A.
+
+**Step 4: run quote-mining locally.** No Claude needed; costs nothing.
+
+```
+make quote-mine PLAYLIST_NAME=mycreator THEMES="passive income,index funds,compound interest"
+```
+
+Output: `distilled/mycreator/quotes.md` (human-readable) and
+`citations.json` (machine-readable). Each quote includes the video it
+came from and whether the match was exact, stemmed, or via an alias.
+
+If you want fuzzy/paraphrase matching (e.g., "money working for you"
+should also match `passive income`), add a `distilled/mycreator/themes.aliases.json`:
+
+```json
+{
+  "passive income": ["money working for you", "recurring revenue"],
+  "compound interest": ["compounding", "interest on interest"]
+}
+```
+
+---
+
+### Copy-paste mode (no API key)
+
+You can run Phases 2–4 entirely by hand if you don't want to set up
+`ANTHROPIC_API_KEY`. Open the prompts in `prompts/`, paste each
+transcript into Claude.ai, save the response as the right filename, and
+repeat. Slower but works on a Pro/Max chat subscription. The PRD
+documents both paths.
+
+---
+
+## Where things end up
+
+After a full run you'll find:
+
+```
+output/mycreator/                     # raw transcripts (do not share)
+  video_01_*/transcript.txt
+  video_01_*/transcript.clean.txt     # preprocessor output
+  video_01_*/preprocess.json          # what was removed and why
+
+distilled/mycreator/                  # everything Claude touched
+  scope.json                          # your intent + model choices
+  video_01.json ... video_40.json     # Phase 2 output
+  synthesis.json                      # Phase 3 output (review gate)
+  SKILL.md                            # Phase 4 output (citation-free)
+  citations.md                        # which video + timestamp backs each claim
+  cost.json                           # exactly what you spent
+```
 
 ---
 
