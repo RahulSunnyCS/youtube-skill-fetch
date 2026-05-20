@@ -30,6 +30,12 @@ VALID_INTENTS = {
     "topical-report",
 }
 
+VALID_MODES = {
+    "claude_code",  # default: emit BRIEF.md for the user's Claude Code session
+    "api",          # call Anthropic API directly (needs ANTHROPIC_API_KEY)
+    "manual",       # generate paste-ready files for Claude.ai web UI
+}
+
 
 @dataclass
 class Scope:
@@ -40,12 +46,15 @@ class Scope:
     question: str = ""
     target_audience: str = "personal"
     models: dict = field(default_factory=lambda: dict(DEFAULT_MODELS))
+    mode: str = "claude_code"
 
     def validate(self) -> None:
         if self.intent not in VALID_INTENTS:
             raise ValueError(f"intent must be one of {sorted(VALID_INTENTS)}; got {self.intent!r}")
         if self.depth not in {"quick", "standard", "deep"}:
             raise ValueError(f"depth must be quick/standard/deep; got {self.depth!r}")
+        if self.mode not in VALID_MODES:
+            raise ValueError(f"mode must be one of {sorted(VALID_MODES)}; got {self.mode!r}")
         if self.intent in {"quote-mining"} and not self.themes:
             raise ValueError("intent=quote-mining requires non-empty themes")
         if self.intent in {"topical-report"} and not self.question:
@@ -75,6 +84,7 @@ def load(distilled_root: Path, playlist: str) -> Scope:
         question=data.get("question", ""),
         target_audience=data.get("target_audience", "personal"),
         models=models,
+        mode=data.get("mode", "claude_code"),
     )
     scope.validate()
     return scope

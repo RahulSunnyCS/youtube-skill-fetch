@@ -94,7 +94,7 @@ You tell the tool what you want before it starts. Options:
 | `method-distillation` | A Skill that thinks like the creator                                    | `SKILL.md`                       |
 | `topical-report`      | A PDF answering "what does X think about Y?"                            | `report.md` + `report.pdf`       |
 | `summary`             | A short summary of every video + the whole playlist                     | `summary.md`                     |
-| `stats`               | How often a creator says a word, mentions a topic, etc. (no Claude cost) | `stats.json` / `stats.md`        |
+| `stats`               | How often a creator says a word, mentions a topic, etc. (purely local)  | `stats.json` / `stats.md`        |
 | `quote-mining`        | A list of verbatim quotes matching themes you specify                   | `quotes.md`                      |
 | `style-clone`         | A Skill that mimics the creator's *phrasing*, not just method           | `SKILL.md`                       |
 
@@ -105,25 +105,21 @@ to verify a specific point, open the citations file.
 
 ---
 
-## What does it cost?
+## How the Claude work gets done
 
-The downloading part is **free** — it just uses your computer.
+The default mode is **`claude_code`**: each phase emits a single
+self-contained brief at `tasks/<playlist>/<phase>/BRIEF.md` that you
+hand off to your Claude Code session with one sentence:
 
-Claude charges by tokens (think: words it reads and writes). Rough
-estimates for a **10-hour playlist** (about 40 videos × 15 minutes):
+> Process tasks/mycreator/phase2/BRIEF.md
 
-| Model         | Approximate cost per playlist |
-| ------------- | ----------------------------- |
-| Sonnet 4.6    | ~$1.50–2.00                   |
-| Opus 4.7      | ~$6–8                         |
+Claude Code reads the brief, reads each transcript, applies the
+prompt, and writes the outputs. **No `ANTHROPIC_API_KEY` needed** —
+the work runs against your existing Claude Code subscription.
 
-`stats` mode is free (no Claude calls). Other modes are cheaper than
-the table above because they do less work.
-
-The tool always **shows you the estimate and asks you to confirm**
-before it starts spending. No surprises.
-
-Full cost model: [`docs/PRD.md`](docs/PRD.md) §8.
+If you'd rather hit the Anthropic API directly (parallel, automated,
+pay-per-token), set `mode: "api"` in `scope.json` or pass `--mode api`
+to any phase runner. You'll need `ANTHROPIC_API_KEY` set.
 
 ---
 
@@ -160,8 +156,9 @@ Whisper on long videos with pauses.
 On Apple Silicon Macs, `mlx-whisper` is another fast option (not yet
 wired in — see `todo.md`).
 
-If you want the programmatic workflow (recommended — automates Phases
-2–4 instead of copy-pasting prompts), also install:
+The default `claude_code` mode needs no API key — the Claude phases
+run in your Claude Code session. **Only install the API client if
+you intend to use `mode=api`:**
 
 ```
 pip install anthropic
@@ -200,9 +197,9 @@ When this finishes you'll have 40-ish `transcript.txt` files under
 `output/mycreator/`.
 
 **Step 3: clean the transcripts.** This strips filler ("um", "you
-know"), sponsor reads, intros/outros, and repeats. It runs locally and
-typically removes ~30–50% of the text *before* anything goes to Claude,
-which saves you ~30–50% on the next step's cost.
+know"), sponsor reads, intros/outros, and repeats. It runs locally
+and typically removes ~30–50% of the text before any Claude work
+starts.
 
 ```
 make preprocess PLAYLIST_NAME=mycreator
@@ -212,8 +209,14 @@ Each video now has a `transcript.clean.txt` and a `preprocess.json`
 showing what was cut. If the cuts look too aggressive, re-run with
 `--no-sponsor-detect` or `--intro-sec 10`.
 
-**Step 4: configure intent (write `scope.json`).** Until the interactive
-scoper ships, drop this file at `distilled/mycreator/scope.json`:
+**Step 4: configure intent (write `scope.json`).** Either run the
+interactive scoper:
+
+```
+make scope PLAYLIST_NAME=mycreator
+```
+
+or drop this file at `distilled/mycreator/scope.json`:
 
 ```json
 {
@@ -223,6 +226,7 @@ scoper ships, drop this file at `distilled/mycreator/scope.json`:
   "themes": [],
   "question": "",
   "target_audience": "personal",
+  "mode": "claude_code",
   "models": {
     "phase2": "claude-haiku-4-5-20251001",
     "phase3": "claude-sonnet-4-6",
@@ -231,48 +235,63 @@ scoper ships, drop this file at `distilled/mycreator/scope.json`:
 }
 ```
 
-**Step 5: distill each video (Phase 2).** This is the first step that
-uses Claude. The defaults use Haiku to keep cost low.
+The `models` block is only consulted when `mode: "api"`.
+
+**Step 5: emit the Phase 2 brief.**
 
 ```
 python scripts/run_phase2.py --playlist mycreator
 ```
 
-You'll see live progress and a running total:
+You'll see:
 
 ```
-Phase 2: model=claude-haiku-4-5-20251001, intent=method-distillation, 40 videos, concurrency=4
-  ✓ video_01: ok (820 out tokens)  [running total: $0.0034]
-  ✓ video_02: ok (760 out tokens)  [running total: $0.0067]
-  ...
-Phase 2 done. Estimated cost: $0.1240
-Cost breakdown: distilled/mycreator/cost.json
+Phase 2 (claude_code): 40 videos to process.
+================================================================
+BRIEF READY — hand off to Claude Code
+================================================================
+Brief written to: tasks/mycreator/phase2/BRIEF.md
+In your Claude Code session, just say:
+    Process tasks/mycreator/phase2/BRIEF.md
+================================================================
 ```
 
-Open `distilled/mycreator/video_01.json` to spot-check the extraction
-(it uses short keys; `python scripts/expand_schema.py
-distilled/mycreator/video_01.json` pretty-prints to verbose form).
+Now open Claude Code in this repo and paste exactly that sentence.
+Claude Code will read the brief, process every video, and write the
+JSON outputs to `distilled/mycreator/video_NN.json`. The loop is
+resumable — if you stop and re-run, only the missing files are picked
+up.
 
-**Step 6: synthesize across videos.**
+When it's done, spot-check `distilled/mycreator/video_01.json`. Run
+`python scripts/expand_schema.py distilled/mycreator/video_01.json`
+to pretty-print the compact schema.
+
+**Step 6: emit the Phase 3 brief.**
 
 ```
 make phase3 PLAYLIST_NAME=mycreator
 ```
 
-Writes `distilled/mycreator/synthesis.json`. **Eyeball it** — this is
-the human review gate. Confirm the recurring patterns look right
-before paying for Phase 4.
+Same pattern: a brief lands at `tasks/mycreator/phase3/BRIEF.md`,
+you hand it off to Claude Code, and `synthesis.json` is written.
 
-**Step 7: author the Skill.**
+**Eyeball `synthesis.json`** before moving on — this is the human
+review gate. Confirm the recurring patterns look right.
+
+**Step 7: emit the Phase 4 brief.**
 
 ```
 make phase4 PLAYLIST_NAME=mycreator SKILL_MODE=Teacher
 ```
 
-Writes a versioned, citation-free `SKILL.md`, updates `CHANGELOG.md`,
-and regenerates `citations.md` (the sidecar that maps every claim back
-to a video and timestamp). Re-running bumps the version and backs up
-the previous SKILL.md.
+Claude Code writes a versioned, citation-free `SKILL.md` and bumps
+`CHANGELOG.md`. Then run:
+
+```
+python scripts/citations.py --playlist mycreator
+```
+
+to regenerate the `citations.md` sidecar.
 
 You now have a Skill. Load it into Claude (via Claude Code, claude.ai
 Projects, or the API) and it will answer in the creator's method.
@@ -307,28 +326,28 @@ compound interest?" — without watching all 40 videos.
   "themes": [],
   "question": "What does the creator say about compound interest and long-term investing?",
   "target_audience": "personal",
-  "models": {
-    "phase2": "claude-haiku-4-5-20251001",
-    "phase3": "claude-sonnet-4-6",
-    "phase4": "claude-sonnet-4-6"
-  }
+  "mode": "claude_code"
 }
 ```
 
-**Step 5: run the topical pipeline.**
+**Step 5: emit the topical brief.**
 
 ```
 make topical PLAYLIST_NAME=mycreator
 ```
 
-This calls the targeted extraction prompt on each cleaned transcript
-(only statements relevant to the question), then writes
-`distilled/mycreator/report.md` plus a `citations.md` sidecar. If
-`pandoc` is installed, a `report.pdf` is rendered too.
+A single brief at `tasks/mycreator/topical/BRIEF.md` covers both the
+per-video extraction and the final report. Hand it off to Claude Code,
+and it writes `distilled/mycreator/report.md` plus a `citations.md`
+sidecar. If `pandoc` is installed, render the PDF with:
+
+```
+pandoc distilled/mycreator/report.md -o distilled/mycreator/report.pdf
+```
 
 ---
 
-### Example C — Just find every quote about a topic ($0)
+### Example C — Just find every quote about a topic (local-only)
 
 **Scenario:** You don't need a Skill or a report — you just want every
 place the creator says "passive income" or "index funds," with
@@ -336,7 +355,7 @@ timestamps.
 
 **Steps 1–3** same as Example A.
 
-**Step 4: run quote-mining locally.** No Claude needed; costs nothing.
+**Step 4: run quote-mining locally.** No Claude needed; pure local.
 
 ```
 make quote-mine PLAYLIST_NAME=mycreator THEMES="passive income,index funds,compound interest"
@@ -386,7 +405,7 @@ This:
    filenames like `001_t0234_look_at_this.jpg` so false positives are
    obvious and easy to `rm`.
 
-Cost: **$0** (pure local). Per-video cap is 15 screenshots by default
+Pure local — no Claude calls. Per-video cap is 15 screenshots by default
 (`--max-shots`); customize triggers with `--triggers-file mine.txt`.
 
 **Preview without downloading the video:**
@@ -425,12 +444,16 @@ output/mycreator/                     # raw transcripts (do not share)
   video_01_*/screenshots.json         # manifest: frame -> ts + trigger + context
 
 distilled/mycreator/                  # everything Claude touched
-  scope.json                          # your intent + model choices
+  scope.json                          # your intent + mode + model choices
   video_01.json ... video_40.json     # Phase 2 output
   synthesis.json                      # Phase 3 output (review gate)
   SKILL.md                            # Phase 4 output (citation-free)
   citations.md                        # which video + timestamp backs each claim
-  cost.json                           # exactly what you spent
+
+tasks/mycreator/                      # briefs handed off to Claude Code
+  phase2/BRIEF.md
+  phase3/BRIEF.md
+  phase4/BRIEF.md
 ```
 
 ---
@@ -448,7 +471,7 @@ distilled/mycreator/                  # everything Claude touched
 ## Project documents
 
 - [`docs/PRD.md`](docs/PRD.md) — product requirements: every phase, every
-  output, cost model, compliance notes. Start here if you want the full picture.
+  output, compliance notes. Start here if you want the full picture.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute.
 - [`SECURITY.md`](SECURITY.md) — how to report a security issue privately.
 - [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) — community standards.

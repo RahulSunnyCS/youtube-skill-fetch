@@ -23,8 +23,6 @@ import sys
 from pathlib import Path
 
 import scope as scope_module
-from accounting import CostAccumulator
-from claude_client import ClaudeClient
 
 
 P5_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "05_eval_rubric.md"
@@ -39,7 +37,9 @@ def main() -> int:
     p.add_argument("--skill-path",
                    help="Pre-generated SKILL.md to evaluate. "
                         "If omitted, uses distilled/<playlist>/SKILL.md.")
-    p.add_argument("--model", help="Override scope.json model for evaluation")
+    p.add_argument("--model", help="(api mode) Override scope.json model for evaluation")
+    p.add_argument("--mode", choices=sorted(scope_module.VALID_MODES),
+                   help="Override scope.json mode (claude_code/api/manual)")
     args = p.parse_args()
 
     distilled_root = Path(args.distilled_root)
@@ -72,7 +72,7 @@ def main() -> int:
         sys.exit(f"No transcript in held-out dir {holdout_dir}")
 
     scope = scope_module.load(distilled_root, args.playlist)
-    model = args.model or scope.model_for("phase3")
+    mode = args.mode or scope.mode
 
     system_prompt = P5_PROMPT.read_text()
     skill_text = skill_path.read_text()
@@ -82,13 +82,50 @@ def main() -> int:
         f"---\n\n"
         f"Held-out video transcript ({holdout_dir.name}):\n\n{transcript_text}"
     )
+    score_path = distilled_dir / "score.json"
 
+    if mode == "claude_code":
+        brief_dir = Path("tasks") / args.playlist / "eval"
+        brief_dir.mkdir(parents=True, exist_ok=True)
+        brief = brief_dir / "BRIEF.md"
+        brief.write_text(f"""# Eval — hold-one-out scoring
+
+You are Claude Code in the user's session. Score the SKILL.md by
+predicting what it would say about a held-out video.
+
+## How to process
+
+1. Read the SKILL.md at `{skill_path}`.
+2. Read the held-out transcript at `{transcript_path}`.
+3. Apply the system prompt below.
+4. Write the resulting JSON score record to `{score_path}`. Include
+   these top-level keys in addition to whatever the prompt produces:
+   - `playlist`: `{args.playlist}`
+   - `held_out_video`: `{holdout_dir.name}`
+   - `skill_path`: `{skill_path}`
+
+## System prompt
+
+```
+{system_prompt.rstrip()}
+```
+""")
+        print(f"Eval (claude_code): held-out={holdout_dir.name}")
+        from task_emitter import announce
+        announce(brief)
+        return 0
+
+    if mode == "manual":
+        sys.exit("mode=manual is not implemented yet for eval. Use "
+                 "mode=claude_code (default) or mode=api.")
+
+    # api mode
+    from claude_client import ClaudeClient
+    model = args.model or scope.model_for("phase3")
     client = ClaudeClient(model=model, max_tokens=2048)
-    accumulator = CostAccumulator(playlist=args.playlist)
 
-    print(f"Eval: model={model}, held-out={holdout_dir.name}")
+    print(f"Eval (api): model={model}, held-out={holdout_dir.name}")
     result = client.complete(system=system_prompt, user=user_msg, cache_system=False)
-    accumulator.record(phase="eval", result=result)
 
     text = result.text.strip()
     if text.startswith("```"):
@@ -107,13 +144,11 @@ def main() -> int:
         "skill_path": str(skill_path),
         **score,
     }
-    (distilled_dir / "score.json").write_text(json.dumps(score_record, indent=2))
+    score_path.write_text(json.dumps(score_record, indent=2))
 
-    accumulator.write(distilled_dir / "cost.json")
     overall = score.get("scores", {}).get("overall")
     print(f"\nDone. Overall: {overall}")
-    print(f"  Wrote {distilled_dir / 'score.json'}")
-    print(f"  Eval cost: ${accumulator.running_total():.4f}")
+    print(f"  Wrote {score_path}")
     return 0
 
 

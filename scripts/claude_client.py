@@ -1,10 +1,9 @@
 """
 Thin adapter over the Anthropic Python SDK.
 
-Why an adapter:
-- Phases 2-4 should not know whether they're calling the SDK, direct HTTP,
-  or a mock. This file is the single seam.
-- Lets us swap models / providers / mocks without touching pipeline code.
+Only used when scope.mode == "api". The default mode (claude_code) hands
+work off to the user's Claude Code session via a BRIEF.md and never
+imports this file.
 
 Usage:
     from scripts.claude_client import ClaudeClient
@@ -30,10 +29,6 @@ from typing import Optional
 @dataclass
 class CompletionResult:
     text: str
-    input_tokens: int
-    output_tokens: int
-    cache_read_tokens: int
-    cache_write_tokens: int
     model: str
 
 
@@ -55,7 +50,7 @@ class ClaudeClient:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError(
                 "ANTHROPIC_API_KEY is not set. "
-                "Export it before running phases 2-4."
+                "Export it before running phases 2-4 in mode=api."
             )
 
         self._client = Anthropic()
@@ -95,17 +90,8 @@ class ClaudeClient:
                     system=system_param,
                     messages=[{"role": "user", "content": user}],
                 )
-                usage = resp.usage
                 return CompletionResult(
                     text=resp.content[0].text,
-                    input_tokens=getattr(usage, "input_tokens", 0),
-                    output_tokens=getattr(usage, "output_tokens", 0),
-                    cache_read_tokens=getattr(
-                        usage, "cache_read_input_tokens", 0
-                    ),
-                    cache_write_tokens=getattr(
-                        usage, "cache_creation_input_tokens", 0
-                    ),
                     model=self.model,
                 )
             except (RateLimitError, APIError) as exc:

@@ -110,8 +110,14 @@ A short pre-flight that the rest of the pipeline reads from
   (full playlist), `deep` (full playlist + re-pass with stricter rubric).
 - **F0.4** For `stats`, `quote-mining`, and `topical-report`, capture the
   **target terms / themes / question** in `scope.json`.
-- **F0.5** Emit a cost + time estimate based on playlist length × intent
-  before any paid step runs; require explicit confirmation to proceed.
+- **F0.5** Capture **mode**: how the Claude phases run.
+  - `claude_code` (default) — emit a `BRIEF.md` per phase under
+    `tasks/<playlist>/<phase>/`; the user's Claude Code session does
+    the actual work. No Anthropic API key required.
+  - `api` — call the Anthropic API directly (parallel, automated).
+    Requires `ANTHROPIC_API_KEY`.
+  - `manual` — generate paste-ready files for the Claude.ai web UI
+    (escape hatch; reuses prompts under `prompts/`).
 - **F0.6** Persist answers to `scope.json`; later phases read this file
   and adjust prompts, skip steps, or switch outputs accordingly.
 - **F0.7** Capture an explicit **rights confirmation** ("I own this
@@ -144,9 +150,10 @@ A short pre-flight that the rest of the pipeline reads from
 - **F2.4** For `topical-report` intent, Phase 2 extracts only statements
   relevant to the user's question (passed via `scope.json:question`),
   not the full method.
-- **F2.5** Phase 2 runs via the **SDK orchestrator** (see §7a) by
-  default, with prompt caching and bounded parallelism. The
-  copy-paste prompt path remains supported as a fallback.
+- **F2.5** Phase 2 runs via one of the **modes** (see §7a). Default
+  is `claude_code` (brief handed to the user's Claude Code session).
+  `api` mode keeps the bounded-parallel + cache behaviour; `manual`
+  mode emits files for the Claude.ai web UI.
 
 ### Phase 3 — Synthesize (Claude, reduce)
 - **F3.1** Prompt `prompts/03_synthesize.md` takes the concatenated per-video
@@ -182,57 +189,49 @@ A short pre-flight that the rest of the pipeline reads from
 | `quote-mining`      | run     | quote-extract prompt | merge + dedupe | skip            | `quotes.md` + `citations.*` |
 | `topical-report`    | run     | targeted extract | dedupe + cluster   | report writer   | `report.md` + `report.pdf` + `citations.*` |
 
-## 7a. SDK orchestrator (cross-phase infrastructure)
+## 7a. Execution modes (cross-phase infrastructure)
 
-Phases 2–4 default to **programmatic execution** via the Anthropic Python
-SDK rather than copy-paste prompts. The SDK is hidden behind a thin
-adapter (`scripts/claude_client.py`) so it can be swapped for direct
-HTTP, a different model provider, or a mock for tests.
+Phases 2–4 run in one of three modes, selected via `scope.json:mode`.
 
-- **F7a.1** A single env var (`ANTHROPIC_API_KEY`) is the only credential.
-- **F7a.2** Model is configurable via `--model` flag and `scope.json`;
-  defaults to a current Sonnet for cost.
-- **F7a.3** Every Phase 2 call uses **prompt caching** on the
-  system/instructions block so re-runs across videos hit cache.
-- **F7a.4** Phase 2 runs **bounded-parallel** (default 4 in flight,
-  configurable); failures retry with exponential backoff.
-- **F7a.5** Phase 2 is **resumable**: completed `video_NN.json` files
-  are skipped; partial runs can be resumed without re-paying for done work.
-- **F7a.6** Phase 3 and Phase 4 are single SDK calls; Phase 3 uses
-  prompt caching on the concatenated per-video JSON corpus so iterating
-  on Phase 4 mode/prompt is cheap.
-- **F7a.7** Copy-paste prompt files remain in `prompts/` and remain
-  supported — users without an API key can run the manual path.
+### 7a.1 `claude_code` (default)
 
-## 8. Estimated cost (to the user running it)
+Each phase runner emits a single self-contained `BRIEF.md` under
+`tasks/<playlist>/<phase>/`. The brief includes the full prompt
+inline, the list of input paths to read, and the exact output paths
+to write. The user hands it off to their Claude Code session with one
+sentence (`Process tasks/<playlist>/phase2/BRIEF.md`).
 
-This is what a **self-hosting user** pays out of their own pocket. The
-project itself has no revenue, no servers, and no per-user cost.
+- **F7a.1.1** No API key required. The work runs against the user's
+  existing Claude Code subscription.
+- **F7a.1.2** Resumable: the brief instructs Claude Code to skip
+  tasks whose output already exists.
+- **F7a.1.3** No background processes — Claude Code drives the work
+  itself in the user's session and the user sees every read/write.
 
-Phase 1 is free (local CPU/disk). Claude API cost is dominated by Phase 2
-and scales linearly with playlist size. Estimates assume ~15 min videos
-with ~2k word transcripts (~3k input tokens each, ~1k output JSON).
+### 7a.2 `api`
 
-| Playlist size | Total in | Total out | Sonnet 4.6 (~$3/M in, $15/M out) | Opus 4.7 (~$15/M in, $75/M out) |
-| ------------- | -------- | --------- | -------------------------------- | ------------------------------- |
-| 10 videos     | ~45k     | ~14k      | ~$0.35                           | ~$1.75                          |
-| 50 videos     | ~210k    | ~65k      | ~$1.60                           | ~$8.00                          |
-| 100 videos    | ~415k    | ~130k     | ~$3.20                           | ~$15.50                         |
+Direct Anthropic Python SDK calls behind a thin adapter
+(`scripts/claude_client.py`). Useful for unattended / batch runs.
 
-Cost is order-of-magnitude; real numbers depend on transcript length, model
-choice, and whether Phase 3 uses **prompt caching** on the per-video JSON
-corpus (recommended — meaningfully reduces Phase 3/4 input cost when iterating).
+- **F7a.2.1** `ANTHROPIC_API_KEY` is the only credential.
+- **F7a.2.2** Model is configurable via `--model` flag and `scope.json`.
+- **F7a.2.3** Phase 2 uses **prompt caching** on the system block.
+- **F7a.2.4** Phase 2 is **bounded-parallel** (default 4 in flight)
+  with exponential-backoff retry on transient errors.
+- **F7a.2.5** All phases are **resumable**.
 
-Non-default intents adjust this:
-- `stats` → **$0** (no Claude calls).
-- `summary` → ~50–70% of the method-distillation cost (no Phase 4, smaller Phase 3).
-- `quote-mining` → ~60% (smaller Phase 2 outputs, no Phase 4).
+### 7a.3 `manual`
 
-## 9. Non-functional requirements
+The prompt files under `prompts/` are paste-ready; users without an
+API key (and not using Claude Code) can paste each transcript into
+the Claude.ai web UI and save the response themselves.
+
+## 8. Non-functional requirements
 
 - **NFR1.** Local-first: Phase 1 requires no API key and no paid services.
-- **NFR2.** Cost: Claude usage is bounded by playlist size; per-video
-  distillation is independent and parallelizable.
+- **NFR2.** Default execution mode requires no API key (`claude_code`);
+  the user's existing subscription covers the work. API mode remains
+  available as an opt-in.
 - **NFR3.** Transparency: every phase writes a flat-file artifact a human
   can read.
 - **NFR4.** Portability: runs on macOS and Linux with the dependencies

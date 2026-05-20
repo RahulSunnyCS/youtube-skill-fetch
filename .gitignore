@@ -1,5 +1,6 @@
 output/
 distilled/
+tasks/
 *.pyc
 __pycache__/
 .venv/

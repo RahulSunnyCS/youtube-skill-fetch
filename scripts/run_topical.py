@@ -2,17 +2,19 @@
 Topical report orchestrator (intent=topical-report).
 
 Phase 1.5 → 2 → 4 collapsed for this intent:
-  - Phase 2: targeted per-video extraction using prompts/02_topical_extract.md
-  - Phase 4: cluster + write report using prompts/04_topical_report.md
+  - Per-video extraction using prompts/02_topical_extract.md
+  - Cluster + write report using prompts/04_topical_report.md
+
+Default mode (`claude_code`): emits a single brief at
+tasks/<playlist>/topical/BRIEF.md.
+
+API mode (`api`): direct calls to the Anthropic API.
 
 Outputs:
   distilled/<playlist>/topical/video_NN.json
   distilled/<playlist>/report.md
-  distilled/<playlist>/report.pdf  (best-effort via pandoc; skipped if missing)
-  distilled/<playlist>/citations.md (sidecar referencing video timestamps)
-
-Usage:
-    python scripts/run_topical.py --playlist <name> [--question "..."] [--concurrency 4]
+  distilled/<playlist>/report.pdf  (best-effort via pandoc)
+  distilled/<playlist>/citations.md
 """
 
 from __future__ import annotations
@@ -23,12 +25,10 @@ import json
 import shutil
 import subprocess
 import sys
-import threading
 from pathlib import Path
 
 import scope as scope_module
-from accounting import CostAccumulator
-from claude_client import ClaudeClient
+import task_emitter
 
 
 PROMPT_EXTRACT = Path(__file__).resolve().parent.parent / "prompts" / "02_topical_extract.md"
@@ -50,14 +50,12 @@ def _find_inputs(playlist_dir: Path) -> list[tuple[str, Path]]:
 
 
 def _extract_one(
-    client: ClaudeClient,
+    client,
     system: str,
     user_prefix: str,
     vid: str,
     transcript: Path,
     out_dir: Path,
-    accumulator: CostAccumulator,
-    lock: threading.Lock,
 ) -> tuple[str, bool, str]:
     out_path = out_dir / f"{vid}.json"
     if out_path.exists():
@@ -68,8 +66,6 @@ def _extract_one(
         user=f"{user_prefix}\n\nVideo ID: {vid}\n\nTranscript:\n\n{transcript_text}",
         cache_system=True,
     )
-    with lock:
-        accumulator.record(phase="phase2_topical", result=result)
     text = result.text.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0]
@@ -117,6 +113,64 @@ def _render_citations(extractions: list[dict], dest: Path) -> None:
     dest.write_text("\n".join(lines))
 
 
+def _run_api_mode(args, scope, inputs, question, distilled_dir, topical_dir,
+                  extract_system, report_system) -> int:
+    from claude_client import ClaudeClient
+
+    model_extract = args.model_extract or scope.model_for("phase2")
+    model_report = args.model_report or scope.model_for("phase4")
+    user_prefix = f"QUESTION: {question}"
+    client_extract = ClaudeClient(model=model_extract)
+
+    print(f"Topical extract (api): model={model_extract}, {len(inputs)} videos")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+        futs = []
+        for vid, t in inputs:
+            futs.append(pool.submit(
+                _extract_one, client_extract, extract_system, user_prefix,
+                vid, t, topical_dir,
+            ))
+        for f in concurrent.futures.as_completed(futs):
+            name, ok, msg = f.result()
+            marker = "✓" if ok else "✗"
+            print(f"  {marker} {name}: {msg}")
+
+    extractions: list[dict] = []
+    for jf in sorted(topical_dir.glob("video_*.json")):
+        try:
+            extractions.append(json.loads(jf.read_text()))
+        except json.JSONDecodeError:
+            continue
+    if not extractions:
+        sys.exit("No usable extractions; aborting before report.")
+
+    user_msg = (
+        f"QUESTION: {question}\n\n"
+        f"Extractions (one per video):\n{json.dumps(extractions, ensure_ascii=False)}"
+    )
+    client_report = ClaudeClient(model=model_report, max_tokens=4096)
+    print(f"\nReport (api): model={model_report}")
+    result = client_report.complete(system=report_system, user=user_msg, cache_system=True)
+    body = result.text.strip()
+    if body.startswith("```"):
+        body = body.split("\n", 1)[1].rsplit("```", 1)[0]
+
+    md_path = distilled_dir / "report.md"
+    md_path.write_text(body)
+    print(f"  Wrote {md_path}")
+
+    pdf_path = distilled_dir / "report.pdf"
+    if _render_pdf(md_path, pdf_path):
+        print(f"  Wrote {pdf_path}")
+    else:
+        print("  (skipped PDF — install pandoc to enable)")
+
+    _render_citations(extractions, distilled_dir / "citations.md")
+    print(f"  Wrote {distilled_dir / 'citations.md'}")
+    print("\nDone.")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--playlist", required=True)
@@ -124,8 +178,10 @@ def main() -> int:
     p.add_argument("--distilled-root", default="distilled")
     p.add_argument("--question", help="Override scope.json question")
     p.add_argument("--concurrency", type=int, default=4)
-    p.add_argument("--model-extract", help="Override phase2 model")
-    p.add_argument("--model-report", help="Override phase4 model")
+    p.add_argument("--model-extract", help="(api mode) Override phase2 model")
+    p.add_argument("--model-report", help="(api mode) Override phase4 model")
+    p.add_argument("--mode", choices=sorted(scope_module.VALID_MODES),
+                   help="Override scope.json mode (claude_code/api/manual)")
     args = p.parse_args()
 
     distilled_root = Path(args.distilled_root)
@@ -143,68 +199,33 @@ def main() -> int:
     topical_dir = distilled_dir / "topical"
     topical_dir.mkdir(parents=True, exist_ok=True)
 
-    model_extract = args.model_extract or scope.model_for("phase2")
-    model_report = args.model_report or scope.model_for("phase4")
-
     extract_system = PROMPT_EXTRACT.read_text()
-    user_prefix = f"QUESTION: {question}"
-
-    client_extract = ClaudeClient(model=model_extract)
-    accumulator = CostAccumulator(playlist=args.playlist)
-    lock = threading.Lock()
-
-    print(f"Topical extract: model={model_extract}, {len(inputs)} videos")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        futs = []
-        for vid, t in inputs:
-            futs.append(pool.submit(
-                _extract_one, client_extract, extract_system, user_prefix,
-                vid, t, topical_dir, accumulator, lock,
-            ))
-        for f in concurrent.futures.as_completed(futs):
-            name, ok, msg = f.result()
-            marker = "✓" if ok else "✗"
-            print(f"  {marker} {name}: {msg}")
-
-    # Aggregate extractions and write the report
-    extractions: list[dict] = []
-    for jf in sorted(topical_dir.glob("video_*.json")):
-        try:
-            extractions.append(json.loads(jf.read_text()))
-        except json.JSONDecodeError:
-            continue
-    if not extractions:
-        sys.exit("No usable extractions; aborting before report.")
-
     report_system = PROMPT_REPORT.read_text()
-    user_msg = (
-        f"QUESTION: {question}\n\n"
-        f"Extractions (one per video):\n{json.dumps(extractions, ensure_ascii=False)}"
-    )
-    client_report = ClaudeClient(model=model_report, max_tokens=4096)
-    print(f"\nReport: model={model_report}")
-    result = client_report.complete(system=report_system, user=user_msg, cache_system=True)
-    accumulator.record(phase="phase4_topical", result=result)
-    body = result.text.strip()
-    if body.startswith("```"):
-        body = body.split("\n", 1)[1].rsplit("```", 1)[0]
+    mode = args.mode or scope.mode
 
-    md_path = distilled_dir / "report.md"
-    md_path.write_text(body)
-    print(f"  Wrote {md_path}")
+    if mode == "claude_code":
+        pending = [(vid, t) for vid, t in inputs
+                   if not (topical_dir / f"{vid}.json").exists()]
+        report_path = distilled_dir / "report.md"
+        brief = task_emitter.write_topical_brief(
+            playlist=args.playlist,
+            inputs=pending or inputs,
+            topical_dir=topical_dir,
+            report_path=report_path,
+            question=question,
+            extract_prompt=extract_system,
+            report_prompt=report_system,
+        )
+        print(f"Topical (claude_code): {len(pending)} videos to extract, then 1 report.")
+        task_emitter.announce(brief)
+        return 0
 
-    pdf_path = distilled_dir / "report.pdf"
-    if _render_pdf(md_path, pdf_path):
-        print(f"  Wrote {pdf_path}")
-    else:
-        print("  (skipped PDF — install pandoc to enable)")
+    if mode == "manual":
+        sys.exit("mode=manual is not implemented yet for topical. Use "
+                 "mode=claude_code (default) or mode=api.")
 
-    _render_citations(extractions, distilled_dir / "citations.md")
-    print(f"  Wrote {distilled_dir / 'citations.md'}")
-
-    accumulator.write(distilled_dir / "cost.json")
-    print(f"\nDone. Estimated cost: ${accumulator.running_total():.4f}")
-    return 0
+    return _run_api_mode(args, scope, inputs, question, distilled_dir, topical_dir,
+                         extract_system, report_system)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import scope as scope_module
-from scope import DEFAULT_MODELS, VALID_INTENTS, Scope
+from scope import DEFAULT_MODELS, VALID_INTENTS, VALID_MODES, Scope
 
 
 def _prompt(label: str, default: str = "", allowed: list[str] | None = None) -> str:
@@ -84,7 +84,13 @@ def interactive(playlist: str) -> tuple[Scope, dict]:
         default="personal", allowed=["personal", "shared"],
     )
 
-    print("\nModel choices (defaults are the cost-optimised picks):")
+    print("\nHow should the Claude phases be run?")
+    print("  claude_code  - emit a BRIEF.md for your Claude Code session to process (default, free under Pro/Max)")
+    print("  api          - call the Anthropic API directly (needs ANTHROPIC_API_KEY, pay-per-token)")
+    print("  manual       - generate paste-ready files for the Claude.ai web UI")
+    mode = _prompt("Mode", default="claude_code", allowed=sorted(VALID_MODES))
+
+    print("\nModel choices (only consulted in mode=api; ignored in claude_code/manual):")
     m2 = _prompt("  Phase 2 model", default=DEFAULT_MODELS["phase2"])
     m3 = _prompt("  Phase 3 model", default=DEFAULT_MODELS["phase3"])
     m4 = _prompt("  Phase 4 model", default=DEFAULT_MODELS["phase4"])
@@ -120,23 +126,9 @@ def interactive(playlist: str) -> tuple[Scope, dict]:
         question=question,
         target_audience=audience,
         models={"phase2": m2, "phase3": m3, "phase4": m4},
+        mode=mode,
     )
     return scope, consent
-
-
-def estimate_cost_quick(intent: str, n_videos: int = 40) -> str:
-    """Rough order-of-magnitude estimate string. Honest about uncertainty."""
-    if intent == "stats":
-        return "≈ $0 (no Claude calls)"
-    if intent == "quote-mining":
-        return "≈ $0 (no Claude calls by default)"
-    if intent in {"method-distillation", "style-clone"}:
-        return f"≈ ${0.005 * n_videos:.2f} (Haiku Phase 2 + Sonnet Phase 3/4)"
-    if intent == "summary":
-        return f"≈ ${0.003 * n_videos:.2f} (Haiku per-video summary + Sonnet rollup)"
-    if intent == "topical-report":
-        return f"≈ ${0.004 * n_videos:.2f} (targeted extraction + Sonnet report)"
-    return "unknown"
 
 
 def main() -> int:
@@ -150,10 +142,9 @@ def main() -> int:
     p.add_argument("--themes", default="")
     p.add_argument("--question", default="")
     p.add_argument("--audience", default="personal")
+    p.add_argument("--mode", default="claude_code", choices=sorted(VALID_MODES))
     p.add_argument("--assume-rights", action="store_true",
                    help="In --non-interactive, skip the rights prompt (assume yes).")
-    p.add_argument("--n-videos-estimate", type=int, default=40,
-                   help="Used only for the cost-estimate message")
     args = p.parse_args()
 
     distilled_root = Path(args.distilled_root)
@@ -166,6 +157,7 @@ def main() -> int:
             themes=[t.strip() for t in args.themes.split(",") if t.strip()],
             question=args.question,
             target_audience=args.audience,
+            mode=args.mode,
         )
         if not args.assume_rights:
             sys.exit("--non-interactive requires --assume-rights to record consent.")
@@ -179,8 +171,17 @@ def main() -> int:
     else:
         scope, consent = interactive(args.playlist)
 
-    print(f"\nEstimated Claude cost (assumes ~{args.n_videos_estimate} videos): "
-          f"{estimate_cost_quick(scope.intent, args.n_videos_estimate)}\n")
+    if scope.mode == "claude_code":
+        print("\nMode: claude_code — Claude phases will be handed off to your "
+              "Claude Code session via tasks/<playlist>/<phase>/BRIEF.md.")
+        print("No Anthropic API key required.")
+    elif scope.mode == "manual":
+        print("\nMode: manual — phase runners will emit paste-ready files for "
+              "the Claude.ai web UI.")
+    else:
+        print("\nMode: api — phase runners will call the Anthropic API directly. "
+              "Requires ANTHROPIC_API_KEY.")
+    print()
 
     distilled_dir = distilled_root / args.playlist
     distilled_dir.mkdir(parents=True, exist_ok=True)

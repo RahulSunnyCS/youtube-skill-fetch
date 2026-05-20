@@ -7,6 +7,14 @@ See bottom for what remains.
 
 ## Shipped
 
+### ✓ 0. `claude_code` execution mode as default
+`scripts/task_emitter.py`. Each phase runner emits a single
+self-contained `BRIEF.md` at `tasks/<playlist>/<phase>/` that the
+user hands off to their Claude Code session. No `ANTHROPIC_API_KEY`
+required by default; the Anthropic SDK path is now opt-in via
+`mode: "api"`. All cost-accounting machinery removed (no
+`accounting.py`, no `pricing.py`, no `cost.json`).
+
 ### ✓ 1. Phase 0 interactive scoping CLI
 `scripts/scope_init.py`. Walks intent, language, depth, themes,
 question, audience, rights confirmation. Emits `scope.json` and
@@ -14,8 +22,8 @@ question, audience, rights confirmation. Emits `scope.json` and
 
 ### ✓ 2. Phase 3 orchestrator
 `scripts/run_phase3.py`. Reads per-video JSONs, calls Sonnet with the
-synthesis prompt, writes `synthesis.json`, records cost. Prompt
-caching on the corpus. Phase 3 prompt now requires source citations
+synthesis prompt, writes `synthesis.json`. Prompt caching on the
+corpus (api mode). Phase 3 prompt now requires source citations
 (≥2 supporting videos per recurring pattern).
 
 ### ✓ 3. Phase 4 orchestrator + skill versioning
@@ -37,7 +45,7 @@ than failing. Logs which path each video took.
 report writer. PDF rendering via pandoc when available; falls back to
 Markdown otherwise. Citations emitted as a sidecar grouped by facet.
 
-### ✓ 6. `stats` intent (local, $0)
+### ✓ 6. `stats` intent (local-only)
 `scripts/run_stats.py`. Word + bigram + trigram frequencies, vocab
 size, per-video duration (from timestamped sidecar), user-term
 counts. Emits `stats.json` + `stats.md`.
@@ -134,18 +142,12 @@ sandboxed environment.
 ### Phase 0 Claude assistance (open design Q — decided)
 **Decision:** not now. Keep the CLI dependency-free and offline-capable
 for the first version. Claude-assisted question sharpening is a clean
-follow-up but it complicates the consent flow (now Phase 0 itself
-costs money before the user has confirmed rights).
+follow-up but it complicates the consent flow.
 
 ### Marketplace location (open design Q — decided)
 **Decision:** in this repo, under `examples/`. The contribution bar
 (score threshold, license declaration) keeps quality up. Splitting
 into a separate repo can happen later if the volume justifies it.
-
-### Cost-delta across runs (open design Q — decided)
-**Decision:** the `accounting.write()` helper already merges across
-phases. Cross-run deltas can be derived by diffing `cost.json` files
-— a future `scripts/diff_cost.py` is trivial when there's demand.
 
 ---
 

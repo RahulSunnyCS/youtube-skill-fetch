@@ -5,8 +5,9 @@ youtube-transcript-api>=0.6.0
 # same model weights). openai-whisper works as a fallback.
 # pip install faster-whisper        # recommended
 # pip install openai-whisper        # fallback (older, slower)
-# Optional — only needed when running phases 2-4 via the SDK orchestrator
-# (scripts/run_phase2.py, etc.). Copy-paste workflow does not require it.
+# Optional — only needed when running phases 2-4 in mode="api" (direct
+# Anthropic API calls). The default mode="claude_code" runs the work in
+# your Claude Code session and does NOT require this package.
 # anthropic>=0.40.0
 # Optional — only needed when YouTube captions are absent and Whisper must transcribe.
 # openai-whisper>=20231117

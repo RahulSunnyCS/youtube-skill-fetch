@@ -1,19 +1,27 @@
 """
-Phase 2 orchestrator: per-video distillation via the Anthropic SDK.
+Phase 2 orchestrator: per-video distillation.
 
-Reads transcript.clean.txt (produced by preprocess_transcript.py) for
-each video under output/<playlist>/ and writes distilled JSON to
+Default mode (`claude_code`): emits a single self-contained brief at
+tasks/<playlist>/phase2/BRIEF.md and tells the user to hand it off to
+their Claude Code session. No API key required.
+
+API mode (`api`): direct calls to the Anthropic API, resumable, parallel,
+prompt-cached. Needs ANTHROPIC_API_KEY.
+
+Mode is read from scope.json's `mode` field (set via scope_init.py) and
+can be overridden with --mode.
+
+Reads transcript.clean.txt (preferred) or transcript.txt under
+output/<playlist>/ and writes distilled JSON to
 distilled/<playlist>/video_NN.json.
 
-Resumable: skips videos whose JSON already exists.
-Parallel: runs up to --concurrency calls in flight.
-Cached: the Phase 2 system prompt is marked for prompt-cache reuse.
-Accounted: writes distilled/<playlist>/cost.json after the run.
-Model: read from scope.json's models.phase2 (default Haiku); overridable.
-
 Usage:
+    # default (uses Claude Code session, no API key needed):
+    python scripts/run_phase2.py --playlist <name>
+
+    # API mode (existing behaviour):
     export ANTHROPIC_API_KEY=...
-    python scripts/run_phase2.py --playlist <name> [--concurrency 4] [--model ...]
+    python scripts/run_phase2.py --playlist <name> --mode api [--concurrency 4]
 """
 
 from __future__ import annotations
@@ -22,12 +30,10 @@ import argparse
 import concurrent.futures
 import json
 import sys
-import threading
 from pathlib import Path
 
 import scope as scope_module
-from accounting import CostAccumulator
-from claude_client import ClaudeClient
+import task_emitter
 
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "02_distill_video.md"
@@ -73,13 +79,11 @@ def _is_verbose_schema(data: dict) -> bool:
 
 
 def distill_one(
-    client: ClaudeClient,
+    client,
     system_prompt: str,
     video_id: str,
     transcript: Path,
     out_path: Path,
-    accumulator: CostAccumulator,
-    lock: threading.Lock,
 ) -> tuple[str, bool, str]:
     if out_path.exists():
         return (video_id, True, "skipped (already exists)")
@@ -92,10 +96,7 @@ def distill_one(
         user=user_msg,
         cache_system=True,
     )
-    with lock:
-        accumulator.record(phase="phase2", result=result)
 
-    # Try to parse as JSON. If malformed OR verbose-schema, re-prompt once.
     parsed: dict | None = None
     notes: list[str] = []
     try:
@@ -114,10 +115,8 @@ def distill_one(
         result2 = client.complete(
             system=retry_system,
             user=user_msg,
-            cache_system=False,  # different system text; don't cache the retry
+            cache_system=False,
         )
-        with lock:
-            accumulator.record(phase="phase2", result=result2)
         try:
             parsed2 = json.loads(result2.text)
             if isinstance(parsed2, dict) and not _is_verbose_schema(parsed2):
@@ -125,7 +124,7 @@ def distill_one(
                 result = result2
                 notes.append("retry succeeded with compact schema")
             elif isinstance(parsed2, dict):
-                parsed = parsed2  # still verbose, but at least JSON
+                parsed = parsed2
                 result = result2
                 notes.append("retry still verbose-schema; accepting")
         except json.JSONDecodeError:
@@ -136,10 +135,34 @@ def distill_one(
         return (video_id, False, "non-JSON response after retry; saved as .raw.txt")
 
     out_path.write_text(json.dumps(parsed, ensure_ascii=False))
-    msg = f"ok ({result.output_tokens} out tokens)"
+    msg = "ok"
     if notes:
         msg += f"  [{'; '.join(notes)}]"
     return (video_id, True, msg)
+
+
+def _run_api_mode(args, scope, inputs, system_prompt, distilled_dir) -> int:
+    from claude_client import ClaudeClient
+
+    model = args.model or scope.model_for("phase2")
+    client = ClaudeClient(model=model)
+
+    print(f"Phase 2 (api): model={model}, intent={scope.intent}, "
+          f"{len(inputs)} videos, concurrency={args.concurrency}")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+        futures = []
+        for vid, t in inputs:
+            out_path = distilled_dir / f"{vid}.json"
+            futures.append(pool.submit(
+                distill_one, client, system_prompt, vid, t, out_path,
+            ))
+        for fut in concurrent.futures.as_completed(futures):
+            name, ok, msg = fut.result()
+            marker = "✓" if ok else "✗"
+            print(f"  {marker} {name}: {msg}")
+
+    print("\nPhase 2 done.")
+    return 0
 
 
 def main() -> int:
@@ -147,9 +170,11 @@ def main() -> int:
     parser.add_argument("--playlist", required=True, help="Playlist name under output/ and distilled/")
     parser.add_argument("--output-root", default="output")
     parser.add_argument("--distilled-root", default="distilled")
-    parser.add_argument("--model", help="Override scope.json model for Phase 2")
+    parser.add_argument("--model", help="(api mode) Override scope.json model for Phase 2")
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--videos", help="Comma-separated list to limit to (e.g. video_03,video_07)")
+    parser.add_argument("--mode", choices=sorted(scope_module.VALID_MODES),
+                        help="Override scope.json mode (claude_code/api/manual)")
     args = parser.parse_args()
 
     distilled_root = Path(args.distilled_root)
@@ -158,7 +183,7 @@ def main() -> int:
     distilled_dir.mkdir(parents=True, exist_ok=True)
 
     scope = scope_module.load(distilled_root, args.playlist)
-    model = args.model or scope.model_for("phase2")
+    mode = args.mode or scope.mode
 
     if scope.intent == "stats":
         sys.exit("intent=stats does not require Phase 2 (local-only). Use scripts/run_stats.py.")
@@ -176,28 +201,33 @@ def main() -> int:
             sys.exit(f"No videos matched --videos={args.videos}")
 
     system_prompt = load_system_prompt()
-    client = ClaudeClient(model=model)
-    accumulator = CostAccumulator(playlist=args.playlist)
-    lock = threading.Lock()
 
-    print(f"Phase 2: model={model}, intent={scope.intent}, "
-          f"{len(inputs)} videos, concurrency={args.concurrency}")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        futures = []
-        for vid, t in inputs:
-            out_path = distilled_dir / f"{vid}.json"
-            futures.append(pool.submit(
-                distill_one, client, system_prompt, vid, t, out_path, accumulator, lock,
-            ))
-        for fut in concurrent.futures.as_completed(futures):
-            name, ok, msg = fut.result()
-            marker = "✓" if ok else "✗"
-            print(f"  {marker} {name}: {msg}  [running total: ${accumulator.running_total():.4f}]")
+    if mode == "claude_code":
+        # Filter to videos that still need processing (resumable preview).
+        pending = [(vid, t) for vid, t in inputs
+                   if not (distilled_dir / f"{vid}.json").exists()]
+        done = len(inputs) - len(pending)
+        if not pending:
+            print(f"Phase 2: all {len(inputs)} videos already have outputs at "
+                  f"{distilled_dir}. Nothing to do.")
+            return 0
+        brief = task_emitter.write_phase2_brief(
+            playlist=args.playlist,
+            inputs=pending,
+            distilled_dir=distilled_dir,
+            system_prompt=system_prompt,
+        )
+        print(f"Phase 2 (claude_code): {len(pending)} videos to process"
+              f"{f' ({done} already done — skipped)' if done else ''}.")
+        task_emitter.announce(brief)
+        return 0
 
-    accumulator.write(distilled_dir / "cost.json")
-    print(f"\nPhase 2 done. Estimated cost: ${accumulator.running_total():.4f}")
-    print(f"Cost breakdown: {distilled_dir / 'cost.json'}")
-    return 0
+    if mode == "manual":
+        sys.exit("mode=manual is not implemented yet for Phase 2. Use "
+                 "mode=claude_code (default) or mode=api, or follow the "
+                 "copy-paste instructions in README.md.")
+
+    return _run_api_mode(args, scope, inputs, system_prompt, distilled_dir)
 
 
 if __name__ == "__main__":
