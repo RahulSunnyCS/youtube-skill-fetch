@@ -99,16 +99,28 @@ A short pre-flight that the rest of the pipeline reads from
   - `quote-mining` — extract verbatim quotes matching user-supplied themes.
   - `style-clone` — like `method-distillation` but Phase 2 biases toward
     verbatim phrasing and rhetorical moves.
+  - `topical-report` — answer a specific question about the creator's
+    body of work (e.g., "what does X think about commodities?", "how is
+    X learning AI?"). Extracts only relevant claims, deduplicates them,
+    clusters them, and emits a structured report as Markdown and PDF.
+    Does **not** produce a `SKILL.md`.
 - **F0.2** Capture **language**: source language code (ISO 639-1) or
   `auto`; optional target language for translated output.
 - **F0.3** Capture **depth**: `quick` (single video sample), `standard`
   (full playlist), `deep` (full playlist + re-pass with stricter rubric).
-- **F0.4** For `stats` and `quote-mining`, capture the **target terms /
-  themes** list.
+- **F0.4** For `stats`, `quote-mining`, and `topical-report`, capture the
+  **target terms / themes / question** in `scope.json`.
 - **F0.5** Emit a cost + time estimate based on playlist length × intent
   before any paid step runs; require explicit confirmation to proceed.
 - **F0.6** Persist answers to `scope.json`; later phases read this file
   and adjust prompts, skip steps, or switch outputs accordingly.
+- **F0.7** Capture an explicit **rights confirmation** ("I own this
+  content, it is CC-licensed, or I have the creator's permission") and
+  record it to `consent.json` with a timestamp. Refuse to proceed
+  without it.
+- **F0.8** Capture **target audience** for the output (`personal` /
+  `shared`). `shared` triggers stricter Phase 3 redaction and a
+  mandatory attribution header in any published artifact.
 
 ### Phase 1 — Extract (local)
 - **F1.1** Accept a YouTube playlist URL (or single video URL).
@@ -126,6 +138,15 @@ A short pre-flight that the rest of the pipeline reads from
 - **F2.1** Prompt `prompts/02_distill_video.md` takes one transcript and
   emits structured JSON of claims, heuristics, examples, and moves.
 - **F2.2** One JSON file per video at `distilled/<playlist>/video_NN.json`.
+- **F2.3** Every extracted item carries a `source` field with `video_id`
+  and `timestamp` (MM:SS) so it can be cited later. Citations are not
+  embedded in `SKILL.md` — they live in a separate sidecar (see §10).
+- **F2.4** For `topical-report` intent, Phase 2 extracts only statements
+  relevant to the user's question (passed via `scope.json:question`),
+  not the full method.
+- **F2.5** Phase 2 runs via the **SDK orchestrator** (see §7a) by
+  default, with prompt caching and bounded parallelism. The
+  copy-paste prompt path remains supported as a fallback.
 
 ### Phase 3 — Synthesize (Claude, reduce)
 - **F3.1** Prompt `prompts/03_synthesize.md` takes the concatenated per-video
@@ -140,6 +161,13 @@ A short pre-flight that the rest of the pipeline reads from
 - **F4.2** Mode is one of `Teacher`, `Reviewer`, `Advisor`.
 - **F4.3** `SKILL.md` includes a clear trigger description, the method
   distilled to actionable steps, and worked examples drawn from the source.
+- **F4.4** `SKILL.md` is **citation-free**. Sources live in a separate
+  `citations.json` / `citations.md` sidecar that maps every claim and
+  example in `SKILL.md` back to `[video_NN @ MM:SS]`.
+- **F4.5** For `topical-report` intent, Phase 4 instead emits
+  `report.md` (and a rendered `report.pdf` via pandoc when available)
+  answering the user's question, with deduped/clustered findings and a
+  matching `citations.md`.
 
 ### Intent branching (Phase 0 → 2/3/4)
 
@@ -147,11 +175,34 @@ A short pre-flight that the rest of the pipeline reads from
 
 | Intent              | Phase 1 | Phase 2          | Phase 3            | Phase 4         | Output                   |
 | ------------------- | ------- | ---------------- | ------------------ | --------------- | ------------------------ |
-| `method-distillation` | run   | run              | run                | run             | `SKILL.md`               |
-| `style-clone`       | run     | run (verbatim-biased) | run           | run (`Teacher`) | `SKILL.md`               |
-| `summary`           | run     | summary prompt   | playlist-summary   | skip            | `summary.md`             |
+| `method-distillation` | run   | run              | run                | run             | `SKILL.md` + `citations.*` |
+| `style-clone`       | run     | run (verbatim-biased) | run           | run (`Teacher`) | `SKILL.md` + `citations.*` |
+| `summary`           | run     | summary prompt   | playlist-summary   | skip            | `summary.md` + `citations.*` |
 | `stats`             | run     | skip (local analyzer) | skip          | skip            | `stats.json` / `stats.md` |
-| `quote-mining`      | run     | quote-extract prompt | merge + dedupe | skip            | `quotes.md`              |
+| `quote-mining`      | run     | quote-extract prompt | merge + dedupe | skip            | `quotes.md` + `citations.*` |
+| `topical-report`    | run     | targeted extract | dedupe + cluster   | report writer   | `report.md` + `report.pdf` + `citations.*` |
+
+## 7a. SDK orchestrator (cross-phase infrastructure)
+
+Phases 2–4 default to **programmatic execution** via the Anthropic Python
+SDK rather than copy-paste prompts. The SDK is hidden behind a thin
+adapter (`scripts/claude_client.py`) so it can be swapped for direct
+HTTP, a different model provider, or a mock for tests.
+
+- **F7a.1** A single env var (`ANTHROPIC_API_KEY`) is the only credential.
+- **F7a.2** Model is configurable via `--model` flag and `scope.json`;
+  defaults to a current Sonnet for cost.
+- **F7a.3** Every Phase 2 call uses **prompt caching** on the
+  system/instructions block so re-runs across videos hit cache.
+- **F7a.4** Phase 2 runs **bounded-parallel** (default 4 in flight,
+  configurable); failures retry with exponential backoff.
+- **F7a.5** Phase 2 is **resumable**: completed `video_NN.json` files
+  are skipped; partial runs can be resumed without re-paying for done work.
+- **F7a.6** Phase 3 and Phase 4 are single SDK calls; Phase 3 uses
+  prompt caching on the concatenated per-video JSON corpus so iterating
+  on Phase 4 mode/prompt is cheap.
+- **F7a.7** Copy-paste prompt files remain in `prompts/` and remain
+  supported — users without an API key can run the manual path.
 
 ## 8. Estimated cost (to the user running it)
 
@@ -197,10 +248,17 @@ output/<playlist>/video_NN_<slug>/ocr.txt          # screen-heavy only
 output/<playlist>/video_NN_<slug>/metadata.json
 distilled/<playlist>/video_NN.json                 # Phase 2 (method/style intents)
 distilled/<playlist>/synthesis.json                # Phase 3
-distilled/<playlist>/SKILL.md                      # Phase 4 (method/style intents)
+distilled/<playlist>/SKILL.md                      # Phase 4 (method/style intents) — citation-free
 distilled/<playlist>/summary.md                    # intent=summary
 distilled/<playlist>/stats.json|stats.md           # intent=stats
 distilled/<playlist>/quotes.md                     # intent=quote-mining
+distilled/<playlist>/report.md                     # intent=topical-report
+distilled/<playlist>/report.pdf                    # intent=topical-report (pandoc, optional)
+distilled/<playlist>/citations.json                # universal sidecar: claim → [video_NN @ MM:SS, ...]
+distilled/<playlist>/citations.md                  # human-readable citations
+distilled/<playlist>/consent.json                  # Phase 0 rights confirmation
+distilled/<playlist>/score.json                    # eval output (when produced)
+distilled/<playlist>/CHANGELOG.md                  # diff/versioning output
 ```
 
 ## 11. Dependencies
@@ -209,6 +267,64 @@ distilled/<playlist>/quotes.md                     # intent=quote-mining
 - Python deps in `requirements.txt`.
 - `openai-whisper` only when captions are missing.
 - Claude (for Phases 2–4); model choice left to the operator.
+
+## 11a. Quality features (cross-cutting)
+
+The following improve output quality across all intents. Compliance notes
+are kept inline because several of these change the legal posture.
+
+- **Speaker diarization** (Phase 1). When a video has multiple speakers
+  (interviews, panels), diarize via `whisperx` or `pyannote` and label
+  speakers as `Host`, `Guest 1`, `Guest 2`. **Compliance:** do not map
+  voices to real names automatically — voiceprints are biometric data in
+  several jurisdictions. Generic labels only, unless the user supplies
+  names manually in `scope.json`.
+- **Chapter awareness** (Phase 1). YouTube descriptions often include
+  chapter timestamps. Phase 1 parses them and splits transcripts on
+  chapter boundaries, dramatically improving Phase 2 quality on long
+  videos. **Compliance:** chapters are creator-published metadata, no
+  added risk.
+- **Diff mode** (post-Phase 4). Re-running on the same playlist months
+  later compares the new `synthesis.json` against the previous one and
+  emits a `CHANGELOG.md` of what changed in the creator's thinking.
+  **Compliance:** purely local comparison of locally-held artifacts.
+- **Skill versioning** (post-Phase 4). `SKILL.md` carries a `version`
+  header; every regeneration bumps it; the `CHANGELOG.md` records the
+  delta. Lets the user keep an evolving skill aligned with the creator's
+  evolving views.
+
+## 11b. Eval & marketplace
+
+A skill or report nobody trusts is worthless. The eval layer makes
+trust measurable; the marketplace makes vetted outputs discoverable.
+
+### Eval (per-output)
+
+- **F11b.1** Hold-one-out evaluation: regenerate the skill from N-1
+  videos; ask Claude (with the generated skill loaded as context) to
+  predict the creator's moves/heuristics on the held-out video; score
+  against the actual content using a structured rubric (overlap,
+  novelty, factual accuracy).
+- **F11b.2** Emit `score.json` alongside every `SKILL.md` /
+  `report.md`. Includes overall score, per-rubric breakdown, and the
+  held-out video ID.
+- **F11b.3** A minimum score threshold gates inclusion in the
+  marketplace catalog.
+
+### Marketplace (repo-level)
+
+- **F11b.4** A `skills/` directory in the repo holds **community-
+  contributed, vetted** skills generated from **CC-licensed or
+  explicitly-permitted** content only. Every entry includes the source
+  playlist URL, license, `SKILL.md`, `citations.md`, and `score.json`.
+- **F11b.5** New entries arrive via PR. CI runs a sanity check: license
+  declared, score above threshold, citations present, no third-party
+  copyrighted transcripts checked in.
+- **F11b.6** Skills targeting a specific creator without that creator's
+  permission are **rejected**, even if the score is high.
+- **F11b.7** A creator-takedown path is documented: any creator can
+  request removal of their entry by opening an issue; maintainers
+  remove within 7 days, no questions asked.
 
 ## 12. Compliance & legal
 
