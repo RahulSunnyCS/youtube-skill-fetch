@@ -1,0 +1,45 @@
+name: Daily analyst
+
+on:
+  schedule:
+    # 16:00 UTC = ~21:30 IST; analyst posts ~20:00 IST so captions have time to land.
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: daily-analyst
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Fetch + distill + summarize
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANALYST_CHANNEL_URL: ${{ vars.ANALYST_CHANNEL_URL }}
+        run: python scripts/daily_analyst.py
+
+      - name: Commit & push if changed
+        run: |
+          if [ -n "$(git status --porcelain daily/)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add daily/
+            title=$(ls -1 daily/ | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort | tail -1)
+            git commit -m "daily: ${title}"
+            git push
+          else
+            echo "No new daily artifacts; nothing to commit."
+          fi

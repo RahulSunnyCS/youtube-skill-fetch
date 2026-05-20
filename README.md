@@ -49,6 +49,46 @@ pip install -r requirements.txt
    `Advisor`), run `prompts/04_author_skill.md`. Save to
    `distilled/<playlist>/SKILL.md`.
 
+## Phase 5–9: Daily analyst tracking
+
+For a creator who posts once a day (e.g. a post-market analyst around 8pm IST),
+`scripts/daily_analyst.py` automates the per-day loop: find today's upload,
+pull captions, distill via the Claude API, write a short summary, and prepend
+to a rolling `daily/JOURNAL.md`.
+
+Layout under `daily/`:
+
+```
+daily/
+  JOURNAL.md                       # newest entry on top
+  YYYY-MM-DD/
+    transcript.txt                 # Phase 6
+    distilled.json                 # Phase 7 (uses prompts/02_distill_video.md)
+    summary.md                     # Phase 8 (uses prompts/05_daily_summary.md)
+```
+
+Configure once on the GitHub repo:
+
+- Secret `ANTHROPIC_API_KEY` — your Claude API key.
+- Variable `ANALYST_CHANNEL_URL` — the channel URL, e.g.
+  `https://www.youtube.com/@handle` (the script appends `/videos`).
+
+The workflow `.github/workflows/daily-analyst.yml` runs at 16:00 UTC daily
+and on manual `workflow_dispatch`. It commits any new artifacts back to the
+default branch. The script is idempotent — re-running on the same day is a
+no-op.
+
+Local run:
+
+```
+ANTHROPIC_API_KEY=sk-... \
+ANALYST_CHANNEL_URL=https://www.youtube.com/@handle \
+python scripts/daily_analyst.py
+```
+
+After ~30 entries, run Phases 3–4 on the accumulated `distilled.json` files
+to author a `SKILL.md` capturing the analyst's recurring patterns.
+
 ## Modes
 
 - **Teacher** — the skill applies the creator's method to produce new artifacts.
