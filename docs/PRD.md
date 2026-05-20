@@ -268,7 +268,9 @@ distilled/<playlist>/CHANGELOG.md                  # diff/versioning output
 
 - `yt-dlp`, `ffmpeg`, `tesseract` (system).
 - Python deps in `requirements.txt`.
-- `openai-whisper` only when captions are missing.
+- `faster-whisper` (preferred) or `openai-whisper` (fallback) only when
+  captions are missing. The extractor picks faster-whisper first; both
+  produce the same `transcript.timestamped.json` shape.
 - Claude (for Phases 2–4); model choice left to the operator.
 
 ## 11a. Quality features (cross-cutting)

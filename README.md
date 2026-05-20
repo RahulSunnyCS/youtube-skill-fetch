@@ -144,11 +144,21 @@ pip install -r requirements.txt
 ```
 
 If a video has no captions, the tool will transcribe it with Whisper.
-Whisper is optional and installed separately:
+Whisper is optional and installed separately. We prefer **faster-whisper**
+(same model weights, ~4× faster, half the memory):
 
 ```
+pip install faster-whisper      # recommended
+# or, as a fallback:
 pip install openai-whisper
 ```
+
+faster-whisper also enables voice-activity detection by default, which
+dramatically reduces the "hallucination on silence" failure mode of
+Whisper on long videos with pauses.
+
+On Apple Silicon Macs, `mlx-whisper` is another fast option (not yet
+wired in — see `todo.md`).
 
 If you want the programmatic workflow (recommended — automates Phases
 2–4 instead of copy-pasting prompts), also install:

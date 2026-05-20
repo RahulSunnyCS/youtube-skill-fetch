@@ -90,6 +90,46 @@ itself stays citation-free.
 
 ## Quality (cross-cutting)
 
+### ✓ faster-whisper as default backend (done)
+**Status:** shipped. `extract_playlist.py` now prefers `faster-whisper`
+(~4× faster, half the memory, same model weights) with `openai-whisper`
+as a documented fallback. VAD filter enabled by default — cuts the
+"hallucination on silence" failure mode. Both backends emit the same
+`transcript.timestamped.json` shape via the new
+`_transcribe_with_whisper` adapter.
+
+### Whisper quality follow-ups (open)
+
+These are the upgrades the adapter pattern unlocks. Each is independent.
+
+- **WhisperX** — runs faster-whisper then forced-alignment via wav2vec2
+  for word-level timestamps (±20ms vs Whisper's ±500ms) and bundles
+  speaker diarization. Add as a `--whisperx` flag, not default —
+  heavier (extra alignment + diarization models). Big win when:
+  (a) screenshots need to land on the exact frame the speaker references,
+  (b) interview/panel content needs `Host`/`Guest 1` labels.
+  Subsumes item 9 (Speaker diarization) below — consider merging.
+
+- **`--whisper-language` flag** — pass through to the backend
+  (`language="en"` for English content). Prevents Whisper from
+  misidentifying accented English as another language and producing
+  nonsense. Today we auto-detect; explicit is more reliable.
+
+- **Bump default model from `base` to `small` or `medium`** — `base`
+  is ~5% WER, `small` ~3.5%, `medium` ~2.8%. Bigger model = slower but
+  meaningfully better on accented / noisy content. Make the default
+  configurable per playlist via `scope.json`.
+
+- **`mlx-whisper` on Apple Silicon** — Mac-native, fastest option on
+  M-series chips. Add as a third branch in `_transcribe_with_whisper`,
+  preferred when `platform.processor() == 'arm'` and the package is
+  importable. Same model weights, same quality.
+
+- **distil-whisper — DO NOT use.** Distilled smaller model; ~1% worse
+  WER and noticeably worse on long-form content (per their paper).
+  Bad fit for our use case. Documented here so it doesn't get picked
+  up by a future contributor as "the obvious cheap option."
+
 ### ✓ Deictic screenshots (done)
 **Status:** shipped. `scripts/extract_playlist.py` now writes
 `transcript.timestamped.json` for both caption and Whisper paths.

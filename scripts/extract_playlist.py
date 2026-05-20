@@ -209,6 +209,80 @@ def _write_timestamped(
     )
 
 
+def _transcribe_with_whisper(media: str, model_name: str):
+    """Transcribe `media` using the best available Whisper backend.
+
+    Tries faster-whisper first (~4x faster, half the memory, same model weights),
+    falls back to openai-whisper. Returns (backend_label, result_dict) where
+    result_dict has the shape {"text": str, "segments": [{...}], "language": str}.
+    Returns (backend_label, None) on failure.
+    """
+    # --- Path A: faster-whisper (preferred) ---
+    try:
+        from faster_whisper import WhisperModel
+        step(f"Transcribing with faster-whisper ({model_name})... this can take a while")
+        # int8 is the standard CPU compute_type: ~4x faster, no quality loss vs fp32
+        model = WhisperModel(model_name, device="cpu", compute_type="int8")
+        # vad_filter skips silence, which dramatically reduces Whisper hallucinations
+        # on long pauses (a known failure mode). Free quality win.
+        segments_iter, info = model.transcribe(
+            media,
+            beam_size=5,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+        )
+        segments: list[dict] = []
+        text_parts: list[str] = []
+        for seg in segments_iter:
+            t = (seg.text or "").strip()
+            if not t:
+                continue
+            segments.append({
+                "start": float(seg.start),
+                "end": float(seg.end),
+                "text": t,
+            })
+            text_parts.append(t)
+        return "faster-whisper", {
+            "text": " ".join(text_parts),
+            "segments": segments,
+            "language": getattr(info, "language", "unknown"),
+        }
+    except ImportError:
+        pass  # faster-whisper not installed; try openai-whisper
+    except Exception as e:
+        warn(f"faster-whisper failed ({type(e).__name__}: {e}); "
+             f"falling back to openai-whisper.")
+
+    # --- Path B: openai-whisper (fallback) ---
+    try:
+        import whisper  # openai-whisper
+    except ImportError:
+        err("No Whisper backend available and no captions. "
+            "Install one of:\n"
+            "  pip install faster-whisper      # recommended (faster, lower memory)\n"
+            "  pip install openai-whisper      # fallback")
+        return "whisper", None
+
+    step(f"Transcribing with openai-whisper ({model_name})... this can take a while")
+    model = whisper.load_model(model_name)
+    result = model.transcribe(media, verbose=False)
+    segments = [
+        {
+            "start": float(seg.get("start", 0.0)),
+            "end": float(seg.get("end", 0.0)),
+            "text": (seg.get("text") or "").strip(),
+        }
+        for seg in result.get("segments", [])
+        if (seg.get("text") or "").strip()
+    ]
+    return "openai-whisper", {
+        "text": result.get("text", ""),
+        "segments": segments,
+        "language": result.get("language", "unknown"),
+    }
+
+
 # ── Stage 1: transcript (captions first, Whisper fallback) ─────────────────────
 def get_transcript(
     video: dict,
@@ -263,33 +337,19 @@ def get_transcript(
 
     if not has("ffmpeg"):
         require("ffmpeg")
-    try:
-        import whisper  # openai-whisper
-    except ImportError:
-        err("openai-whisper not installed and no captions available. "
-            "Run: pip install openai-whisper")
+
+    backend, result = _transcribe_with_whisper(media, whisper_model)
+    if result is None:
         return False
 
-    step(f"Transcribing with Whisper ({whisper_model})... this can take a while")
-    model = whisper.load_model(whisper_model)
-    result = model.transcribe(media, verbose=False)
     text = re.sub(r"\s+", " ", result["text"]).strip()
     tpath.write_text(text, encoding="utf-8")
-    segments = [
-        {
-            "start": float(seg.get("start", 0.0)),
-            "end": float(seg.get("end", 0.0)),
-            "text": (seg.get("text") or "").strip(),
-        }
-        for seg in result.get("segments", [])
-        if (seg.get("text") or "").strip()
-    ]
     _write_timestamped(
-        vdir, source="whisper",
+        vdir, source=backend,
         language=result.get("language", "unknown"),
-        segments=segments,
+        segments=result["segments"],
     )
-    ok(f"Transcript via Whisper ({len(text.split()):,} words)")
+    ok(f"Transcript via {backend} ({len(text.split()):,} words)")
     # tidy: drop the big audio file
     for a in vdir.glob("audio.*"):
         a.unlink(missing_ok=True)
