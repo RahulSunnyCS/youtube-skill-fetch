@@ -130,24 +130,74 @@ def enumerate_videos(source: str, is_local: bool, max_videos: int | None):
     return videos
 
 
+# Markers that genuinely aren't speech — safe to strip.
+# Other bracketed cues like [laughter], [applause], [sighs] carry meaning
+# and are kept (they're rare and don't bloat token count materially).
+_NOISE_BRACKETS_RE = re.compile(
+    r"\[\s*(music|música|musique|musik|silence|no audio)\s*\]",
+    re.IGNORECASE,
+)
+
+
+def _fetch_captions(video_id: str) -> str | None:
+    """Fetch English captions if available; fall back to default track.
+
+    Returns the cleaned transcript text, or None if nothing usable.
+    """
+    from youtube_transcript_api import YouTubeTranscriptApi
+    api = YouTubeTranscriptApi()
+
+    # Prefer English (manual > auto), then any track the user might have.
+    fetched = None
+    try:
+        listing = api.list(video_id)
+        try:
+            track = listing.find_manually_created_transcript(["en", "en-US", "en-GB"])
+        except Exception:
+            try:
+                track = listing.find_generated_transcript(["en", "en-US", "en-GB"])
+            except Exception:
+                track = None
+        if track is not None:
+            fetched = track.fetch()
+    except Exception:
+        pass
+
+    if fetched is None:
+        fetched = api.fetch(video_id)  # default track, whatever language
+
+    raw = " ".join(s.text.strip() for s in fetched)
+    cleaned = _NOISE_BRACKETS_RE.sub("", raw)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or None
+
+
 # ── Stage 1: transcript (captions first, Whisper fallback) ─────────────────────
-def get_transcript(video: dict, vdir: Path, whisper_model: str) -> bool:
+def get_transcript(
+    video: dict,
+    vdir: Path,
+    whisper_model: str,
+    *,
+    min_caption_words: int = 100,
+    force_whisper: bool = False,
+) -> bool:
     """Write transcript.txt. Return True on success."""
     tpath = vdir / "transcript.txt"
 
     # Path 1: YouTube captions (free, instant) — only for real YT videos
-    if video["id"] != "local":
+    if not force_whisper and video["id"] != "local":
         try:
-            from youtube_transcript_api import YouTubeTranscriptApi
-            api = YouTubeTranscriptApi()
-            fetched = api.fetch(video["id"])
-            text = " ".join(s.text.strip() for s in fetched)
-            text = re.sub(r"\[.*?\]", "", text)        # strip [Music] etc
-            text = re.sub(r"\s+", " ", text).strip()
+            text = _fetch_captions(video["id"])
             if text:
-                tpath.write_text(text, encoding="utf-8")
-                ok(f"Transcript via YouTube captions ({len(text.split()):,} words) — FREE")
-                return True
+                word_count = len(text.split())
+                if word_count < min_caption_words:
+                    warn(f"Captions only {word_count} words "
+                         f"(below --min-caption-words={min_caption_words}); "
+                         f"falling back to Whisper.")
+                else:
+                    tpath.write_text(text, encoding="utf-8")
+                    ok(f"Transcript via YouTube captions ({word_count:,} words) — FREE")
+                    return True
         except Exception as e:
             warn(f"No captions ({type(e).__name__}); falling back to Whisper.")
 
@@ -304,6 +354,11 @@ def main():
     p.add_argument("--scene-threshold", type=float, default=0.4)
     p.add_argument("--max-videos", type=int, default=None)
     p.add_argument("--out", default="output")
+    p.add_argument("--min-caption-words", type=int, default=100,
+                   help="If YouTube captions produce fewer than this many words, "
+                        "fall back to Whisper. Set to 0 to always trust captions.")
+    p.add_argument("--force-whisper", action="store_true",
+                   help="Skip YouTube captions; always use Whisper.")
     args = p.parse_args()
 
     say(f"\n{C['bold']}{C['cyan']}━━━ Local Playlist Extractor ━━━{C['reset']}")
@@ -326,7 +381,11 @@ def main():
         vdir.mkdir(exist_ok=True)
 
         # 1. transcript
-        if not get_transcript(v, vdir, args.whisper_model):
+        if not get_transcript(
+            v, vdir, args.whisper_model,
+            min_caption_words=args.min_caption_words,
+            force_whisper=args.force_whisper,
+        ):
             warn("Skipping video (no transcript).")
             continue
 
