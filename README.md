@@ -329,6 +329,49 @@ should also match `passive income`), add a `distilled/mycreator/themes.aliases.j
 
 ---
 
+### Example D — Grab screenshots when the creator says "look at this"
+
+**Scenario:** The creator points at slides, charts, or code on screen.
+You want a folder of frames at exactly those moments, so you can scan
+them visually instead of re-watching everything.
+
+**Step 1: extract.** Same as Example A; produces transcripts **and**
+the timestamped sidecar (`transcript.timestamped.json`) automatically.
+
+**Step 2: capture screenshots.**
+
+```
+make screenshots PLAYLIST_NAME=mycreator
+```
+
+This:
+1. Reads the timestamped transcript and scans for trigger phrases:
+   `look at this`, `see here`, `as you can see`, `notice`, `the chart
+   shows`, etc.
+2. Clusters nearby triggers (within 10s) so you don't get 5 frames of
+   the same slide.
+3. Downloads the video at 720p if it's not already local (yt-dlp).
+4. Uses ffmpeg to grab the frame 1.5s *after* the trigger — creators
+   usually say "look at this" right before the visual appears.
+5. Writes frames to `output/mycreator/video_NN_*/screenshots/` with
+   filenames like `001_t0234_look_at_this.jpg` so false positives are
+   obvious and easy to `rm`.
+
+Cost: **$0** (pure local). Per-video cap is 15 screenshots by default
+(`--max-shots`); customize triggers with `--triggers-file mine.txt`.
+
+**Preview without downloading the video:**
+
+```
+python scripts/capture_screenshots.py --playlist mycreator --skip-download
+```
+
+Writes a `screenshots.json` per video listing the candidate timestamps
+and the speech context around each, so you can decide whether the
+detection looks right before committing to downloads.
+
+---
+
 ### Copy-paste mode (no API key)
 
 You can run Phases 2–4 entirely by hand if you don't want to set up
@@ -346,8 +389,11 @@ After a full run you'll find:
 ```
 output/mycreator/                     # raw transcripts (do not share)
   video_01_*/transcript.txt
+  video_01_*/transcript.timestamped.json  # segment-level start/end for each line
   video_01_*/transcript.clean.txt     # preprocessor output
   video_01_*/preprocess.json          # what was removed and why
+  video_01_*/screenshots/*.jpg        # frames at "look at this" moments (optional)
+  video_01_*/screenshots.json         # manifest: frame -> ts + trigger + context
 
 distilled/mycreator/                  # everything Claude touched
   scope.json                          # your intent + model choices

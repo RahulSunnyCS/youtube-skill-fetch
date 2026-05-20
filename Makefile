@@ -3,7 +3,7 @@ PLAYLIST_NAME ?= playlist
 MODE ?= talking-head
 OUT ?= output
 
-.PHONY: help test1 extract preprocess phase2 quote-mine clean
+.PHONY: help test1 extract preprocess phase2 quote-mine screenshots clean
 
 help:
 	@echo "Targets:"
@@ -12,6 +12,7 @@ help:
 	@echo "  make preprocess PLAYLIST_NAME=...  - clean transcripts before Phase 2"
 	@echo "  make phase2 PLAYLIST_NAME=...      - distill cleaned transcripts via SDK"
 	@echo "  make quote-mine PLAYLIST_NAME=... THEMES='a,b,c'  - local quote search"
+	@echo "  make screenshots PLAYLIST_NAME=... - grab frames at 'look at this' moments"
 	@echo "  make clean                  - remove output/ and distilled/"
 	@echo ""
 	@echo "Vars: PLAYLIST=<url>  PLAYLIST_NAME=<dir>  MODE={talking-head,screen-heavy}  OUT=<dir>"
@@ -30,6 +31,9 @@ phase2:
 
 quote-mine:
 	python3 scripts/quote_mine.py --playlist $(PLAYLIST_NAME) --output-root $(OUT) --themes "$(THEMES)"
+
+screenshots:
+	python3 scripts/capture_screenshots.py --playlist $(PLAYLIST_NAME) --output-root $(OUT)
 
 clean:
 	rm -rf $(OUT) distilled

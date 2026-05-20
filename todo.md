@@ -90,6 +90,21 @@ itself stays citation-free.
 
 ## Quality (cross-cutting)
 
+### ✓ Deictic screenshots (done)
+**Status:** shipped. `scripts/extract_playlist.py` now writes
+`transcript.timestamped.json` for both caption and Whisper paths.
+`scripts/capture_screenshots.py` scans for trigger phrases, clusters
+nearby hits, downloads the video, and grabs frames with ffmpeg.
+`make screenshots PLAYLIST_NAME=...` is wired.
+
+**Optional follow-ups** (only if false-positive rate proves annoying
+in practice):
+- `--smart` flag: small Haiku pass that re-ranks candidate timestamps
+  by visual-relevance confidence. ~$0.003/video. Keep keyword scan as
+  the default.
+- Per-screenshot OCR — run Tesseract on each frame and append to
+  `screenshots.json` so any on-screen text is searchable.
+
 ### 9. Speaker diarization (Phase 1)
 **Why:** Interview / panel content currently muddies who said what.
 **What:** Add `whisperx` or `pyannote` pass when `--diarize` is set.

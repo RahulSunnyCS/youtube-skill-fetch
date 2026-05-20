@@ -139,16 +139,17 @@ _NOISE_BRACKETS_RE = re.compile(
 )
 
 
-def _fetch_captions(video_id: str) -> str | None:
+def _fetch_captions(video_id: str) -> tuple[str, list[dict], str] | None:
     """Fetch English captions if available; fall back to default track.
 
-    Returns the cleaned transcript text, or None if nothing usable.
+    Returns (cleaned_text, segments, language) or None if nothing usable.
+    `segments` is a list of {"start": float, "end": float, "text": str}.
     """
     from youtube_transcript_api import YouTubeTranscriptApi
     api = YouTubeTranscriptApi()
 
-    # Prefer English (manual > auto), then any track the user might have.
     fetched = None
+    language = "unknown"
     try:
         listing = api.list(video_id)
         try:
@@ -159,6 +160,7 @@ def _fetch_captions(video_id: str) -> str | None:
             except Exception:
                 track = None
         if track is not None:
+            language = getattr(track, "language_code", "en")
             fetched = track.fetch()
     except Exception:
         pass
@@ -166,10 +168,45 @@ def _fetch_captions(video_id: str) -> str | None:
     if fetched is None:
         fetched = api.fetch(video_id)  # default track, whatever language
 
-    raw = " ".join(s.text.strip() for s in fetched)
-    cleaned = _NOISE_BRACKETS_RE.sub("", raw)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned or None
+    segments: list[dict] = []
+    for s in fetched:
+        # youtube_transcript_api exposes start (float seconds) and duration.
+        start = float(getattr(s, "start", 0.0))
+        dur = float(getattr(s, "duration", 0.0))
+        text = (s.text or "").strip()
+        if not text:
+            continue
+        # Apply the same [Music]-style strip we do to the flat text.
+        text = _NOISE_BRACKETS_RE.sub("", text).strip()
+        if not text:
+            continue
+        segments.append({"start": start, "end": start + dur, "text": text})
+
+    raw = " ".join(seg["text"] for seg in segments)
+    cleaned = re.sub(r"\s+", " ", raw).strip()
+    if not cleaned:
+        return None
+    return cleaned, segments, language
+
+
+def _write_timestamped(
+    vdir: Path,
+    *,
+    source: str,
+    language: str,
+    segments: list[dict],
+) -> None:
+    """Persist transcript.timestamped.json alongside transcript.txt."""
+    import json
+    payload = {
+        "source": source,
+        "language": language,
+        "segments": segments,
+    }
+    (vdir / "transcript.timestamped.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 # ── Stage 1: transcript (captions first, Whisper fallback) ─────────────────────
@@ -187,8 +224,9 @@ def get_transcript(
     # Path 1: YouTube captions (free, instant) — only for real YT videos
     if not force_whisper and video["id"] != "local":
         try:
-            text = _fetch_captions(video["id"])
-            if text:
+            captions = _fetch_captions(video["id"])
+            if captions:
+                text, segments, language = captions
                 word_count = len(text.split())
                 if word_count < min_caption_words:
                     warn(f"Captions only {word_count} words "
@@ -196,6 +234,10 @@ def get_transcript(
                          f"falling back to Whisper.")
                 else:
                     tpath.write_text(text, encoding="utf-8")
+                    _write_timestamped(
+                        vdir, source="youtube_captions",
+                        language=language, segments=segments,
+                    )
                     ok(f"Transcript via YouTube captions ({word_count:,} words) — FREE")
                     return True
         except Exception as e:
@@ -233,6 +275,20 @@ def get_transcript(
     result = model.transcribe(media, verbose=False)
     text = re.sub(r"\s+", " ", result["text"]).strip()
     tpath.write_text(text, encoding="utf-8")
+    segments = [
+        {
+            "start": float(seg.get("start", 0.0)),
+            "end": float(seg.get("end", 0.0)),
+            "text": (seg.get("text") or "").strip(),
+        }
+        for seg in result.get("segments", [])
+        if (seg.get("text") or "").strip()
+    ]
+    _write_timestamped(
+        vdir, source="whisper",
+        language=result.get("language", "unknown"),
+        segments=segments,
+    )
     ok(f"Transcript via Whisper ({len(text.split()):,} words)")
     # tidy: drop the big audio file
     for a in vdir.glob("audio.*"):

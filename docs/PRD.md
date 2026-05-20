@@ -244,8 +244,11 @@ Non-default intents adjust this:
 ```
 distilled/<playlist>/scope.json                    # Phase 0
 output/<playlist>/video_NN_<slug>/transcript.txt
+output/<playlist>/video_NN_<slug>/transcript.timestamped.json  # segment-level start/end (captions or Whisper)
 output/<playlist>/video_NN_<slug>/ocr.txt          # screen-heavy only
 output/<playlist>/video_NN_<slug>/metadata.json
+output/<playlist>/video_NN_<slug>/screenshots/*.jpg            # deictic-trigger screenshots (optional)
+output/<playlist>/video_NN_<slug>/screenshots.json             # manifest: frame -> ts + trigger + context
 distilled/<playlist>/video_NN.json                 # Phase 2 (method/style intents)
 distilled/<playlist>/synthesis.json                # Phase 3
 distilled/<playlist>/SKILL.md                      # Phase 4 (method/style intents) — citation-free
@@ -342,9 +345,12 @@ machine, and each user is solely responsible for their own compliance.
   sanctioned playback flow. Operators must verify they are entitled to
   download the target playlist (own content, Creative Commons, explicit
   creator permission, or applicable fair-use research jurisdiction).
-- **Raw artifacts stay local.** `output/` (transcripts, OCR, frames) must
-  not be committed to public repos or redistributed. `.gitignore` enforces
-  this by default; this rule is also documented in `README.md`.
+- **Raw artifacts stay local.** `output/` (transcripts, OCR, frames,
+  deictic-trigger screenshots) must not be committed to public repos or
+  redistributed. `.gitignore` enforces this by default; this rule is
+  also documented in `README.md`. Screenshots in particular carry the
+  same posture as transcripts — they are bitmap reproductions of
+  copyrighted video frames.
 - **Transformative output.** `SKILL.md` should capture **method**, not
   reproduce content. Verbatim quotes are limited to short illustrative
   excerpts with attribution. `style-clone` intent carries higher risk —
