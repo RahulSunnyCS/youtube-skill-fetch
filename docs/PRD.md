@@ -57,26 +57,56 @@ loses the cross-video patterns that make the creator's approach distinctive.
 
 ## 6. User journey
 
-1. User picks a playlist URL and a content mode (`talking-head` or
+1. **Phase 0 scoping** — user answers a short pre-flight: source language,
+   intent, depth. The pipeline branches from here.
+2. User picks a playlist URL and a content mode (`talking-head` or
    `screen-heavy`).
-2. `make test1` extracts one video as a sanity check; user eyeballs the
+3. `make test1` extracts one video as a sanity check; user eyeballs the
    transcript.
-3. `make extract` runs the full playlist; transcripts (and OCR text for
+4. `make extract` runs the full playlist; transcripts (and OCR text for
    screen-heavy) land under `output/<playlist>/video_NN_*/`.
-4. For each video, user runs the Phase 2 prompt with Claude; saves JSON to
-   `distilled/<playlist>/video_NN.json`.
-5. User runs the Phase 3 synthesis prompt over the concatenated JSONs;
+5. For each video, user runs the Phase 2 prompt with Claude; saves JSON to
+   `distilled/<playlist>/video_NN.json`. *(Skipped for `stats` intent.)*
+6. User runs the Phase 3 synthesis prompt over the concatenated JSONs;
    reviews `synthesis.json` at the **human review gate**.
-6. User picks a mode and runs the Phase 4 prompt to produce
-   `distilled/<playlist>/SKILL.md`.
-7. User installs `SKILL.md` as a Claude Skill and uses it.
+7. User picks a mode and runs the Phase 4 prompt to produce
+   `distilled/<playlist>/SKILL.md`. *(Replaced by report for non-skill intents.)*
+8. User installs `SKILL.md` as a Claude Skill and uses it.
 
 ## 7. Functional requirements
+
+### Phase 0 — Scoping (local, interactive)
+
+A short pre-flight that the rest of the pipeline reads from
+`distilled/<playlist>/scope.json`. Skipping it falls back to today's defaults
+(`intent=method-distillation`, `language=auto`, `depth=full`).
+
+- **F0.1** Capture **intent**, one of:
+  - `method-distillation` — current behavior; produce a `SKILL.md`.
+  - `stats` — word/phrase frequency, topic counts, speaker time. Local-only,
+    no Claude calls.
+  - `summary` — one-shot Claude summary per video + a playlist summary.
+    No synthesis, no `SKILL.md`.
+  - `quote-mining` — extract verbatim quotes matching user-supplied themes.
+  - `style-clone` — like `method-distillation` but Phase 2 biases toward
+    verbatim phrasing and rhetorical moves.
+- **F0.2** Capture **language**: source language code (ISO 639-1) or
+  `auto`; optional target language for translated output.
+- **F0.3** Capture **depth**: `quick` (single video sample), `standard`
+  (full playlist), `deep` (full playlist + re-pass with stricter rubric).
+- **F0.4** For `stats` and `quote-mining`, capture the **target terms /
+  themes** list.
+- **F0.5** Emit a cost + time estimate based on playlist length × intent
+  before any paid step runs; require explicit confirmation to proceed.
+- **F0.6** Persist answers to `scope.json`; later phases read this file
+  and adjust prompts, skip steps, or switch outputs accordingly.
 
 ### Phase 1 — Extract (local)
 - **F1.1** Accept a YouTube playlist URL (or single video URL).
 - **F1.2** Honor `--mode {talking-head, screen-heavy}` and `--max-videos N`.
 - **F1.3** Prefer existing captions; fall back to Whisper only when absent.
+  Whisper model selection honors `scope.json` language; for non-English
+  sources without captions, warn the operator before falling back.
 - **F1.4** For `screen-heavy`, sample frames and run OCR (`tesseract`),
   emitting an OCR sidecar.
 - **F1.5** Produce one directory per video with `transcript.txt` and
@@ -102,7 +132,40 @@ loses the cross-video patterns that make the creator's approach distinctive.
 - **F4.3** `SKILL.md` includes a clear trigger description, the method
   distilled to actionable steps, and worked examples drawn from the source.
 
-## 8. Non-functional requirements
+### Intent branching (Phase 0 → 2/3/4)
+
+`scope.json:intent` selects the path:
+
+| Intent              | Phase 1 | Phase 2          | Phase 3            | Phase 4         | Output                   |
+| ------------------- | ------- | ---------------- | ------------------ | --------------- | ------------------------ |
+| `method-distillation` | run   | run              | run                | run             | `SKILL.md`               |
+| `style-clone`       | run     | run (verbatim-biased) | run           | run (`Teacher`) | `SKILL.md`               |
+| `summary`           | run     | summary prompt   | playlist-summary   | skip            | `summary.md`             |
+| `stats`             | run     | skip (local analyzer) | skip          | skip            | `stats.json` / `stats.md` |
+| `quote-mining`      | run     | quote-extract prompt | merge + dedupe | skip            | `quotes.md`              |
+
+## 8. Estimated cost
+
+Phase 1 is free (local CPU/disk). Claude cost is dominated by Phase 2 and
+scales linearly with playlist size. Estimates assume ~15 min videos with
+~2k word transcripts (~3k input tokens each, ~1k output JSON).
+
+| Playlist size | Total in | Total out | Sonnet 4.6 (~$3/M in, $15/M out) | Opus 4.7 (~$15/M in, $75/M out) |
+| ------------- | -------- | --------- | -------------------------------- | ------------------------------- |
+| 10 videos     | ~45k     | ~14k      | ~$0.35                           | ~$1.75                          |
+| 50 videos     | ~210k    | ~65k      | ~$1.60                           | ~$8.00                          |
+| 100 videos    | ~415k    | ~130k     | ~$3.20                           | ~$15.50                         |
+
+Cost is order-of-magnitude; real numbers depend on transcript length, model
+choice, and whether Phase 3 uses **prompt caching** on the per-video JSON
+corpus (recommended — meaningfully reduces Phase 3/4 input cost when iterating).
+
+Non-default intents adjust this:
+- `stats` → **$0** (no Claude calls).
+- `summary` → ~50–70% of the method-distillation cost (no Phase 4, smaller Phase 3).
+- `quote-mining` → ~60% (smaller Phase 2 outputs, no Phase 4).
+
+## 9. Non-functional requirements
 
 - **NFR1.** Local-first: Phase 1 requires no API key and no paid services.
 - **NFR2.** Cost: Claude usage is bounded by playlist size; per-video
@@ -113,25 +176,62 @@ loses the cross-video patterns that make the creator's approach distinctive.
   listed in `README.md` and `requirements.txt`.
 - **NFR5.** Idempotence: re-running a phase on existing artifacts is safe.
 
-## 9. Artifacts (data contract)
+## 10. Artifacts (data contract)
 
 ```
+distilled/<playlist>/scope.json                    # Phase 0
 output/<playlist>/video_NN_<slug>/transcript.txt
 output/<playlist>/video_NN_<slug>/ocr.txt          # screen-heavy only
 output/<playlist>/video_NN_<slug>/metadata.json
-distilled/<playlist>/video_NN.json                 # Phase 2
+distilled/<playlist>/video_NN.json                 # Phase 2 (method/style intents)
 distilled/<playlist>/synthesis.json                # Phase 3
-distilled/<playlist>/SKILL.md                      # Phase 4
+distilled/<playlist>/SKILL.md                      # Phase 4 (method/style intents)
+distilled/<playlist>/summary.md                    # intent=summary
+distilled/<playlist>/stats.json|stats.md           # intent=stats
+distilled/<playlist>/quotes.md                     # intent=quote-mining
 ```
 
-## 10. Dependencies
+## 11. Dependencies
 
 - `yt-dlp`, `ffmpeg`, `tesseract` (system).
 - Python deps in `requirements.txt`.
 - `openai-whisper` only when captions are missing.
 - Claude (for Phases 2–4); model choice left to the operator.
 
-## 11. Risks & mitigations
+## 12. Compliance & legal
+
+This pipeline ingests third-party content. The defaults are intentionally
+conservative; operators are responsible for their own use.
+
+- **Scope.** Personal research, learning, and creator-authorized use only.
+  Not for redistribution or commercial repackaging of source material.
+- **YouTube ToS.** Downloading via `yt-dlp` falls outside YouTube's
+  sanctioned playback flow. Operators must verify they are entitled to
+  download the target playlist (own content, Creative Commons, explicit
+  creator permission, or applicable fair-use research jurisdiction).
+- **Raw artifacts stay local.** `output/` (transcripts, OCR, frames) must
+  not be committed to public repos or redistributed. `.gitignore` enforces
+  this by default; this rule is also documented in `README.md`.
+- **Transformative output.** `SKILL.md` should capture **method**, not
+  reproduce content. Verbatim quotes are limited to short illustrative
+  excerpts with attribution. `style-clone` intent carries higher risk —
+  flag explicitly in the output that it imitates style for personal use.
+- **Attribution.** Every published `SKILL.md` includes a header crediting
+  the creator and linking the source playlist.
+- **Creator opt-out.** A documented path: if a creator objects, the
+  operator deletes `output/`, `distilled/`, and any derived `SKILL.md`.
+- **Copyrighted readings.** Phase 3 should flag transcripts containing
+  third-party copyrighted material (audiobook readings, song lyrics,
+  long quoted passages) so they are excluded from `SKILL.md` examples.
+- **PII.** Where transcripts contain third-party PII (names, contact
+  details mentioned on air), Phase 3 redacts before emitting `SKILL.md`.
+- **Prefer official APIs where possible.** Use the YouTube Data API for
+  metadata (titles, IDs, descriptions); reserve `yt-dlp` for captions
+  and audio you have rights to.
+- **Model provider terms.** Operators must comply with Anthropic's usage
+  policy when sending transcripts to Claude.
+
+## 13. Risks & mitigations
 
 - **YouTube ToS / rate limits.** Mitigation: respect `yt-dlp` defaults;
   document that users are responsible for their entitlements.
@@ -145,7 +245,7 @@ distilled/<playlist>/SKILL.md                      # Phase 4
   transcript replacement; Phase 2 prompt instructs Claude to treat OCR as
   supporting evidence.
 
-## 12. Success metrics
+## 14. Success metrics
 
 - **M1.** Time from playlist URL → working `SKILL.md` on a 10-video
   playlist: under 1 hour of wall-clock and under 15 minutes of operator
@@ -157,7 +257,7 @@ distilled/<playlist>/SKILL.md                      # Phase 4
 - **M4.** Phase 1 runs end-to-end on a fresh machine following only the
   `README.md` setup steps.
 
-## 13. Open questions
+## 15. Open questions
 
 - Should Phases 2–4 ship as scripts that call the Claude API directly, or
   remain copy-paste prompts? (Today: copy-paste.)
@@ -165,7 +265,7 @@ distilled/<playlist>/SKILL.md                      # Phase 4
 - Do we want a `Critic` mode distinct from `Reviewer` (rebuttal vs. critique)?
 - Is there value in cross-creator synthesis (merging two creators' methods)?
 
-## 14. Milestones
+## 16. Milestones
 
 - **M0 — Today.** Phase 1 script + Phase 2–4 prompts, manual orchestration.
 - **M1.** Convenience target to run Phase 2 over all transcripts via API.
