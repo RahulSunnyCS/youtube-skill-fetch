@@ -107,6 +107,12 @@ def main() -> int:
     videos = env.get("VIDEOS", "").strip()
     jobs_raw = env.get("JOBS", "").strip()
     out = env.get("OUT", "").strip() or "output"
+    overwrite_raw = env.get("OVERWRITE", "").strip().lower()
+    overwrite: bool | None = None
+    if overwrite_raw in {"1", "true", "yes", "y"}:
+        overwrite = True
+    elif overwrite_raw in {"0", "false", "no", "n"}:
+        overwrite = False
 
     interactive = _is_tty()
 
@@ -121,6 +127,8 @@ def main() -> int:
             return 2
         mode = mode or "talking-head"
         jobs = int(jobs_raw or "1")
+        if overwrite is None:
+            overwrite = False
     else:
         print("== Interactive extract ==  (Enter to accept defaults)")
         if not playlist:
@@ -140,6 +148,12 @@ def main() -> int:
             jobs = _ask_int("Jobs", 4)
         else:
             jobs = int(jobs_raw)
+        if overwrite is None:
+            print()
+            print("If a video was already extracted (matched by YouTube ID),")
+            print("skip it or overwrite the existing files?")
+            choice = _ask_choice("On existing", ["skip", "overwrite"], "skip")
+            overwrite = (choice == "overwrite")
 
     cmd = [
         sys.executable, str(extractor), playlist,
@@ -149,6 +163,8 @@ def main() -> int:
     ]
     if videos:
         cmd += ["--videos", videos]
+    if overwrite:
+        cmd += ["--overwrite"]
 
     print()
     print("Running:", " ".join(shlex.quote(c) for c in cmd))

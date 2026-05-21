@@ -594,6 +594,10 @@ def main():
                         "(e.g. 'en'). If omitted, the backend auto-detects.")
     p.add_argument("--no-description", action="store_true",
                    help="Skip writing description.txt per video.")
+    p.add_argument("--overwrite", action="store_true",
+                   help="Re-extract videos even if they already exist. "
+                        "Default: skip videos whose YouTube ID already has a "
+                        "transcript on disk.")
     args = p.parse_args()
 
     say(f"\n{C['bold']}{C['cyan']}━━━ Local Playlist Extractor ━━━{C['reset']}")
@@ -622,9 +626,50 @@ def main():
     root = Path(args.out) / playlist_name
     root.mkdir(parents=True, exist_ok=True)
 
+    def _find_existing_vdir(video_id: str) -> Path | None:
+        """Return the folder for an already-extracted video, if any.
+
+        Folders now embed the YouTube ID as the second underscore-segment
+        (`video_NN_<id>_<slug>`), so we glob by ID rather than position —
+        a re-run that moved videos around still matches.
+        """
+        if video_id == "local":
+            return None
+        for cand in root.glob(f"video_*_{video_id}_*"):
+            if cand.is_dir():
+                return cand
+        return None
+
+    def _write_extraction_meta(vdir: Path, v: dict, i: int, backend: str) -> None:
+        from datetime import datetime, timezone
+        meta = {
+            "youtube_id": v["id"],
+            "title": v["title"],
+            "url": v.get("url"),
+            "playlist_index": i,
+            "mode": args.mode,
+            "transcript_source": backend,
+            "extracted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        (vdir / "extraction.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
     def process_one(i: int, v: dict) -> None:
         say(f"\n{C['bold']}[{i}/{len(videos)}] {v['title']}{C['reset']}")
-        vdir = root / f"video_{i:02d}_{slugify(v['title'])}"
+
+        existing = _find_existing_vdir(v["id"])
+        if existing and (existing / "transcript.txt").exists() and not args.overwrite:
+            ok(f"Already extracted at {existing.name} — skipping. "
+               f"Use --overwrite to re-extract.")
+            return
+
+        if existing and args.overwrite:
+            vdir = existing
+            step(f"Overwriting existing extraction at {existing.name}")
+        else:
+            id_tag = v["id"] if v["id"] != "local" else "local"
+            vdir = root / f"video_{i:02d}_{id_tag}_{slugify(v['title'])}"
         vdir.mkdir(exist_ok=True)
 
         # 0. description (cheap, enables chapter-aware preprocessing)
@@ -663,6 +708,15 @@ def main():
                         f.unlink(missing_ok=True)
             else:
                 warn("No media available for frames; transcript only.")
+
+        backend = "unknown"
+        ts_meta = vdir / "transcript.timestamped.json"
+        if ts_meta.exists():
+            try:
+                backend = json.loads(ts_meta.read_text()).get("source", "unknown")
+            except (json.JSONDecodeError, OSError):
+                pass
+        _write_extraction_meta(vdir, v, i, backend)
 
     # Parallel only when explicitly asked. Whisper + ffmpeg are CPU-bound,
     # so high --jobs on screen-heavy or --force-whisper will thrash; the

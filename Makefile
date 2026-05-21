@@ -66,11 +66,12 @@ extract:
 	 MODE="$(call _user_set,MODE)" \
 	 VIDEOS="$(call _user_set,VIDEOS)" \
 	 JOBS="$(call _user_set,JOBS)" \
+	 OVERWRITE="$(call _user_set,OVERWRITE)" \
 	 OUT="$(OUT)" \
 	 python3 scripts/extract_interactive.py
 
 extract-batch:
-	python3 scripts/extract_playlist.py "$(PLAYLIST)" $(EXTRACT_FLAGS)
+	python3 scripts/extract_playlist.py "$(PLAYLIST)" $(EXTRACT_FLAGS) $(if $(filter 1 true yes,$(OVERWRITE)),--overwrite,)
 
 preprocess:
 	python3 scripts/preprocess_transcript.py --playlist $(PLAYLIST_NAME) --output-root $(OUT)
