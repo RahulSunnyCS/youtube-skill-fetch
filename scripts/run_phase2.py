@@ -49,7 +49,27 @@ def find_inputs(playlist_dir: Path) -> list[tuple[str, Path]]:
     for video_dir in sorted(playlist_dir.glob("video_*")):
         if not video_dir.is_dir():
             continue
-        vid = "_".join(video_dir.name.split("_")[:2])  # video_NN
+        # Per-video ID for the output JSON filename. Prefer the canonical
+        # youtube_id from extraction.json (handles IDs that contain '_').
+        # Fall back to splitting the folder name for legacy folders that
+        # predate extraction.json.
+        vid: str | None = None
+        meta_path = video_dir / "extraction.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+                yt_id = meta.get("youtube_id")
+                date = meta.get("upload_date") or "00000000"
+                if yt_id and yt_id != "local":
+                    vid = f"video_{date}_{yt_id}"
+            except (json.JSONDecodeError, OSError):
+                pass
+        if vid is None:
+            # Legacy: folder is `video_NN_<slug>` or `video_NN_<id>_<slug>`.
+            # Use the first two segments — unique within a single playlist
+            # at extraction time, which is the only invariant we have.
+            parts = video_dir.name.split("_")
+            vid = "_".join(parts[:2])
         clean = video_dir / "transcript.clean.txt"
         raw = video_dir / "transcript.txt"
         chosen = clean if clean.exists() else raw if raw.exists() else None

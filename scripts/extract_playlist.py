@@ -152,10 +152,23 @@ def enumerate_videos(
         vid = j.get("id")
         if not vid:
             continue
+        # upload_date is usually present in --flat-playlist for YouTube
+        # (YYYYMMDD string). When missing (some sources, age-restricted, etc.),
+        # we fall back to a "timestamp" epoch field, then to None.
+        upload_date = j.get("upload_date")
+        if not upload_date and j.get("timestamp"):
+            try:
+                from datetime import datetime, timezone
+                upload_date = datetime.fromtimestamp(
+                    int(j["timestamp"]), tz=timezone.utc
+                ).strftime("%Y%m%d")
+            except (ValueError, TypeError, OSError):
+                upload_date = None
         videos.append({
             "id": vid,
             "title": j.get("title") or vid,
             "url": j.get("url") or f"https://youtu.be/{vid}",
+            "upload_date": upload_date,  # 'YYYYMMDD' or None
         })
     total = len(videos)
     if selection:
@@ -542,7 +555,7 @@ def write_index(root: Path, playlist_name: str, videos: list, mode: str):
         "",
         "Work PER VIDEO first (the context window can't hold all transcripts at once):",
         "",
-        "1. Open each `video_NN_*/transcript.txt`, paste into Claude, ask it to DISTILL",
+        "1. Open each `<date>_<id>_*/transcript.txt`, paste into Claude, ask it to DISTILL",
         "   into structured JSON (claims, heuristics, reasoning patterns).",
         "2. For screen-heavy videos, also paste that video's `ocr.txt` and/or drag a few",
         "   `frames/key_*.jpg` in alongside the transcript.",
@@ -629,9 +642,10 @@ def main():
     def _find_existing_vdir(video_id: str) -> Path | None:
         """Return the folder for an already-extracted video, if any.
 
-        Folders now embed the YouTube ID as the second underscore-segment
-        (`video_NN_<id>_<slug>`), so we glob by ID rather than position —
-        a re-run that moved videos around still matches.
+        Folders embed the YouTube ID, so we glob by ID rather than position
+        or upload date — a re-run after the playlist gained new uploads
+        still matches the same folder. Matches both the new
+        `video_<date>_<id>_<slug>` and legacy `video_NN_<id>_<slug>`.
         """
         if video_id == "local":
             return None
@@ -646,7 +660,8 @@ def main():
             "youtube_id": v["id"],
             "title": v["title"],
             "url": v.get("url"),
-            "playlist_index": i,
+            "upload_date": v.get("upload_date"),
+            "playlist_index_at_extraction": i,
             "mode": args.mode,
             "transcript_source": backend,
             "extracted_at": datetime.now(timezone.utc).isoformat(),
@@ -668,8 +683,14 @@ def main():
             vdir = existing
             step(f"Overwriting existing extraction at {existing.name}")
         else:
+            # Folder = video_<YYYYMMDD>_<youtube_id>_<title-slug>. The
+            # video_ prefix keeps downstream globs (`video_*`) working;
+            # the date drives chronological sort within the prefix; the
+            # ID is the durable unique key so re-runs match even after
+            # the playlist gains new uploads (which would shift NN).
             id_tag = v["id"] if v["id"] != "local" else "local"
-            vdir = root / f"video_{i:02d}_{id_tag}_{slugify(v['title'])}"
+            date_tag = v.get("upload_date") or "00000000"
+            vdir = root / f"video_{date_tag}_{id_tag}_{slugify(v['title'])}"
         vdir.mkdir(exist_ok=True)
 
         # 0. description (cheap, enables chapter-aware preprocessing)
