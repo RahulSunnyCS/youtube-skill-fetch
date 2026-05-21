@@ -3,6 +3,16 @@ PLAYLIST_NAME ?= playlist
 MODE ?= talking-head
 OUT ?= output
 SKILL_MODE ?= Teacher
+# Optional: '10-25', '1,3,5-7', or a single number. Empty = all.
+VIDEOS ?=
+# Parallel video workers for the extract step. Safe with captions; keep
+# at 1 for --force-whisper / screen-heavy on modest hardware.
+JOBS ?= 1
+
+EXTRACT_FLAGS = --mode $(MODE) --out $(OUT) --jobs $(JOBS)
+ifneq ($(strip $(VIDEOS)),)
+EXTRACT_FLAGS += --videos "$(VIDEOS)"
+endif
 
 .PHONY: help scope test1 extract preprocess phase2 phase3 phase4 \
         topical summary stats quote-mine screenshots citations \
@@ -36,6 +46,7 @@ help:
 	@echo "  make clean                              - remove output/ and distilled/"
 	@echo ""
 	@echo "Vars: PLAYLIST=<url>  PLAYLIST_NAME=<dir>  MODE={talking-head,screen-heavy}  OUT=<dir>"
+	@echo "      VIDEOS='10-25' (or '1,3,5-7')   JOBS=4 (parallel extract)"
 
 scope:
 	python3 scripts/scope_init.py --playlist $(PLAYLIST_NAME)
@@ -44,7 +55,7 @@ test1:
 	python3 scripts/extract_playlist.py "$(PLAYLIST)" --mode $(MODE) --max-videos 1 --out $(OUT)
 
 extract:
-	python3 scripts/extract_playlist.py "$(PLAYLIST)" --mode $(MODE) --out $(OUT)
+	python3 scripts/extract_playlist.py "$(PLAYLIST)" $(EXTRACT_FLAGS)
 
 preprocess:
 	python3 scripts/preprocess_transcript.py --playlist $(PLAYLIST_NAME) --output-root $(OUT)

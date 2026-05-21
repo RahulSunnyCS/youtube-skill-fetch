@@ -199,6 +199,22 @@ make extract PLAYLIST="https://youtube.com/playlist?list=<id>" PLAYLIST_NAME=myc
 When this finishes you'll have 40-ish `transcript.txt` files under
 `output/mycreator/`.
 
+Only want a slice? Use `VIDEOS=` for a range (1-based playlist order):
+
+```
+make extract PLAYLIST="..." VIDEOS="1-10"        # first ten
+make extract PLAYLIST="..." VIDEOS="10-25"       # videos 10 through 25
+make extract PLAYLIST="..." VIDEOS="1,3,5-7"     # cherry-pick
+```
+
+Want it faster? Add `JOBS=N` to process videos in parallel. Safe with
+the captions-first path (IO-bound). Keep `JOBS=1` for `--force-whisper`
+or `MODE=screen-heavy` unless you have spare CPU:
+
+```
+make extract PLAYLIST="..." JOBS=4
+```
+
 **Step 3: clean the transcripts.** This strips filler ("um", "you
 know"), sponsor reads, intros/outros, and repeats. It runs locally and
 typically removes ~30–50% of the text *before* anything goes to Claude,
