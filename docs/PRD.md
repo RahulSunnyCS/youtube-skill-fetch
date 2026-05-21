@@ -243,8 +243,13 @@ Non-default intents adjust this:
 
 ```
 distilled/<playlist>/scope.json                    # Phase 0
+distilled/<playlist>/consent.json                  # Phase 0 rights confirmation
 output/<playlist>/video_NN_<slug>/transcript.txt
 output/<playlist>/video_NN_<slug>/transcript.timestamped.json  # segment-level start/end (captions or Whisper)
+output/<playlist>/video_NN_<slug>/transcript.clean.txt         # preprocessor output
+output/<playlist>/video_NN_<slug>/preprocess.json              # what the preprocessor removed and why
+output/<playlist>/video_NN_<slug>/description.txt              # YouTube description (chapter timestamps live here)
+output/<playlist>/video_NN_<slug>/chapters/*.txt               # per-chapter splits when description has chapters
 output/<playlist>/video_NN_<slug>/ocr.txt          # screen-heavy only
 output/<playlist>/video_NN_<slug>/metadata.json
 output/<playlist>/video_NN_<slug>/screenshots/*.jpg            # deictic-trigger screenshots (optional)

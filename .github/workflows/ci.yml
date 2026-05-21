@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-validate:
+    name: Lint + validate (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install requirements (without optional extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Syntax-check every script
+        run: |
+          python -m compileall -q scripts/
+
+      - name: Validate prompt files
+        run: |
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+
+          fails = []
+          for p in sorted(Path("prompts").glob("*.md")):
+              if p.stat().st_size == 0:
+                  fails.append(f"{p}: empty file")
+                  continue
+              try:
+                  text = p.read_text(encoding="utf-8")
+              except UnicodeDecodeError as e:
+                  fails.append(f"{p}: not valid UTF-8 ({e})")
+                  continue
+              if not text.strip().startswith("#"):
+                  fails.append(f"{p}: missing leading Markdown heading")
+          if fails:
+              print("Prompt validation failures:")
+              for f in fails:
+                  print(f"  - {f}")
+              sys.exit(1)
+          print(f"Validated {len(list(Path('prompts').glob('*.md')))} prompt files.")
+          PY
+
+      - name: Sanity-import all scripts (no execution)
+        # Import succeeds if the module is well-formed. Side-effecting
+        # main() blocks are not entered because we use importlib.
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          from pathlib import Path
+
+          fails = []
+          for p in sorted(Path("scripts").glob("*.py")):
+              spec = importlib.util.spec_from_file_location(p.stem, p)
+              try:
+                  mod = importlib.util.module_from_spec(spec)
+                  spec.loader.exec_module(mod)
+              except SystemExit:
+                  pass  # argparse-driven scripts that call sys.exit on import
+              except Exception as e:
+                  fails.append(f"{p}: {type(e).__name__}: {e}")
+          if fails:
+              print("Import failures:")
+              for f in fails:
+                  print(f"  - {f}")
+              sys.exit(1)
+          PY
+
+  markdown-links:
+    name: Markdown link check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lychee link check
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --no-progress --exclude-mail README.md docs/PRD.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md todo.md
+          fail: false   # non-blocking; broken links are warnings

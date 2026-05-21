@@ -209,15 +209,67 @@ def _write_timestamped(
     )
 
 
-def _transcribe_with_whisper(media: str, model_name: str):
+def _save_description(video: dict, vdir: Path) -> None:
+    """Fetch the video description via yt-dlp and write description.txt.
+
+    Best-effort: failures are silently skipped (descriptions are nice-to-have
+    for chapter parsing, not required).
+    """
+    target = vdir / "description.txt"
+    if target.exists():
+        return
+    url = video.get("url") or f"https://www.youtube.com/watch?v={video['id']}"
+    res = run(["yt-dlp", "--skip-download", "--get-description", url])
+    if res.returncode == 0 and res.stdout.strip():
+        try:
+            target.write_text(res.stdout, encoding="utf-8")
+        except OSError:
+            pass
+
+
+def _is_apple_silicon() -> bool:
+    import platform
+    return platform.system() == "Darwin" and platform.machine() in {"arm64", "aarch64"}
+
+
+def _transcribe_with_whisper(media: str, model_name: str, language: str | None = None):
     """Transcribe `media` using the best available Whisper backend.
 
-    Tries faster-whisper first (~4x faster, half the memory, same model weights),
-    falls back to openai-whisper. Returns (backend_label, result_dict) where
-    result_dict has the shape {"text": str, "segments": [{...}], "language": str}.
-    Returns (backend_label, None) on failure.
+    Preference order: mlx-whisper (Apple Silicon) > faster-whisper > openai-whisper.
+    All three produce the same {"text", "segments", "language"} shape so
+    downstream code is backend-agnostic. Returns (backend_label, result_dict)
+    or (backend_label, None) on failure.
     """
-    # --- Path A: faster-whisper (preferred) ---
+    # --- Path A0: mlx-whisper on Apple Silicon ---
+    if _is_apple_silicon():
+        try:
+            import mlx_whisper  # type: ignore
+            step(f"Transcribing with mlx-whisper ({model_name})...")
+            kwargs: dict = {}
+            if language:
+                kwargs["language"] = language
+            result = mlx_whisper.transcribe(media, path_or_hf_repo=model_name, **kwargs)
+            segments = [
+                {
+                    "start": float(seg.get("start", 0.0)),
+                    "end": float(seg.get("end", 0.0)),
+                    "text": (seg.get("text") or "").strip(),
+                }
+                for seg in result.get("segments", [])
+                if (seg.get("text") or "").strip()
+            ]
+            return "mlx-whisper", {
+                "text": result.get("text", ""),
+                "segments": segments,
+                "language": result.get("language", language or "unknown"),
+            }
+        except ImportError:
+            pass
+        except Exception as e:
+            warn(f"mlx-whisper failed ({type(e).__name__}: {e}); "
+                 f"falling back to faster-whisper.")
+
+    # --- Path A: faster-whisper (preferred cross-platform) ---
     try:
         from faster_whisper import WhisperModel
         step(f"Transcribing with faster-whisper ({model_name})... this can take a while")
@@ -225,12 +277,14 @@ def _transcribe_with_whisper(media: str, model_name: str):
         model = WhisperModel(model_name, device="cpu", compute_type="int8")
         # vad_filter skips silence, which dramatically reduces Whisper hallucinations
         # on long pauses (a known failure mode). Free quality win.
-        segments_iter, info = model.transcribe(
-            media,
-            beam_size=5,
-            vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 500},
-        )
+        kwargs = {
+            "beam_size": 5,
+            "vad_filter": True,
+            "vad_parameters": {"min_silence_duration_ms": 500},
+        }
+        if language:
+            kwargs["language"] = language
+        segments_iter, info = model.transcribe(media, **kwargs)
         segments: list[dict] = []
         text_parts: list[str] = []
         for seg in segments_iter:
@@ -246,7 +300,7 @@ def _transcribe_with_whisper(media: str, model_name: str):
         return "faster-whisper", {
             "text": " ".join(text_parts),
             "segments": segments,
-            "language": getattr(info, "language", "unknown"),
+            "language": getattr(info, "language", language or "unknown"),
         }
     except ImportError:
         pass  # faster-whisper not installed; try openai-whisper
@@ -260,13 +314,17 @@ def _transcribe_with_whisper(media: str, model_name: str):
     except ImportError:
         err("No Whisper backend available and no captions. "
             "Install one of:\n"
-            "  pip install faster-whisper      # recommended (faster, lower memory)\n"
+            "  pip install mlx-whisper         # Apple Silicon\n"
+            "  pip install faster-whisper      # recommended elsewhere\n"
             "  pip install openai-whisper      # fallback")
         return "whisper", None
 
     step(f"Transcribing with openai-whisper ({model_name})... this can take a while")
     model = whisper.load_model(model_name)
-    result = model.transcribe(media, verbose=False)
+    kwargs = {"verbose": False}
+    if language:
+        kwargs["language"] = language
+    result = model.transcribe(media, **kwargs)
     segments = [
         {
             "start": float(seg.get("start", 0.0)),
@@ -279,7 +337,7 @@ def _transcribe_with_whisper(media: str, model_name: str):
     return "openai-whisper", {
         "text": result.get("text", ""),
         "segments": segments,
-        "language": result.get("language", "unknown"),
+        "language": result.get("language", language or "unknown"),
     }
 
 
@@ -291,6 +349,7 @@ def get_transcript(
     *,
     min_caption_words: int = 100,
     force_whisper: bool = False,
+    language: str | None = None,
 ) -> bool:
     """Write transcript.txt. Return True on success."""
     tpath = vdir / "transcript.txt"
@@ -338,7 +397,7 @@ def get_transcript(
     if not has("ffmpeg"):
         require("ffmpeg")
 
-    backend, result = _transcribe_with_whisper(media, whisper_model)
+    backend, result = _transcribe_with_whisper(media, whisper_model, language=language)
     if result is None:
         return False
 
@@ -475,6 +534,11 @@ def main():
                         "fall back to Whisper. Set to 0 to always trust captions.")
     p.add_argument("--force-whisper", action="store_true",
                    help="Skip YouTube captions; always use Whisper.")
+    p.add_argument("--whisper-language", default=None,
+                   help="ISO 639-1 language code passed to the Whisper backend "
+                        "(e.g. 'en'). If omitted, the backend auto-detects.")
+    p.add_argument("--no-description", action="store_true",
+                   help="Skip writing description.txt per video.")
     args = p.parse_args()
 
     say(f"\n{C['bold']}{C['cyan']}━━━ Local Playlist Extractor ━━━{C['reset']}")
@@ -496,11 +560,16 @@ def main():
         vdir = root / f"video_{i:02d}_{slugify(v['title'])}"
         vdir.mkdir(exist_ok=True)
 
+        # 0. description (cheap, enables chapter-aware preprocessing)
+        if not args.no_description and v["id"] != "local":
+            _save_description(v, vdir)
+
         # 1. transcript
         if not get_transcript(
             v, vdir, args.whisper_model,
             min_caption_words=args.min_caption_words,
             force_whisper=args.force_whisper,
+            language=args.whisper_language,
         ):
             warn("Skipping video (no transcript).")
             continue
