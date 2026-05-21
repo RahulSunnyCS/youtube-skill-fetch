@@ -415,71 +415,214 @@ detection looks right before committing to downloads.
 ### Path B — Running it without an API key (Claude Code / Claude Pro)
 
 If you pay for **Claude Pro/Max** or use **Claude Code**, you can run
-the Claude phases entirely through the chat / agent interface — no
+every "thinking" step through the chat / agent interface — no
 `ANTHROPIC_API_KEY`, no per-token spend on top of your subscription.
-The trade-off is that you do one transcript at a time instead of
-batch-parallel.
+The trade-off: you process one video at a time instead of batch-parallel,
+and the synthesis call can be large enough that you may want a Max plan
+for a long playlist.
 
-**Steps 1–3 (local) are identical to Example A:**
+The local extraction/preprocess/screenshot/quote-mine commands are
+**identical to Path A** — they don't call Claude, so an API key is
+irrelevant to them. Run them first:
 
 ```
 make extract     PLAYLIST="https://youtube.com/playlist?list=<id>" PLAYLIST_NAME=mycreator
 make preprocess  PLAYLIST_NAME=mycreator
 ```
 
-You now have `output/mycreator/video_NN_*/transcript.clean.txt` for
-each video. From here, instead of `make phase2/phase3/phase4`:
+After preprocess you should have, for each video, a folder like:
 
-**Phase 2 — distill each video (in Claude Code or claude.ai):**
+```
+output/mycreator/video_01_<title-slug>/
+  transcript.txt              # raw
+  transcript.timestamped.json # segment-level start/end
+  transcript.clean.txt        # what you feed to Claude
+  preprocess.json             # what was cut
+```
 
-1. Open `prompts/02_distill_video.md` and copy the whole prompt.
-2. In Claude Code (or a new claude.ai chat): paste the prompt, then
-   attach or paste the contents of `transcript.clean.txt` for
-   `video_01`.
-3. Claude returns a single JSON object. Save it verbatim to
+From here, everything below replaces `make phase2 / phase3 / phase4`.
+The total work is **three rounds with Claude**: distill each video,
+synthesize across all of them, then write the Skill.
+
+---
+
+#### B-1. Distill each video → one JSON per video
+
+**What this round does:** turns each `transcript.clean.txt` into a
+small JSON file that captures the creator's *method* in that video
+(heuristics, recurring claims, vocabulary). This is the "map" step.
+
+**Inputs:** the prompt at `prompts/02_distill_video.md` + one cleaned
+transcript.
+
+**Output:** one file per video at
+`distilled/mycreator/video_01.json` … `video_40.json`.
+
+**Using Claude Code (easiest — it can read/write files for you):**
+
+Open the project in Claude Code and paste this single instruction:
+
+```
+We're running Phase 2 by hand on a Pro subscription.
+
+For each output/mycreator/video_*/transcript.clean.txt file:
+  1. Read prompts/02_distill_video.md — that's the system prompt.
+  2. Send it the transcript as the user message.
+  3. The response will be a single JSON object (no prose, no fences).
+  4. Save it verbatim to distilled/mycreator/video_NN.json, where NN
+     is the same 2-digit number as the video folder.
+  5. Skip any video_NN.json that already exists (so we can resume).
+
+Process them one at a time and tell me when you're done.
+```
+
+Claude Code will iterate through the folders itself. You can watch
+each JSON appear under `distilled/mycreator/`. **Spot-check one or
+two** — open `video_01.json` and confirm it has `t`, `cc`, `h`, `rp`
+keys with real content from the talk. If you want a human-readable
+view, run:
+
+```
+python scripts/expand_schema.py distilled/mycreator/video_01.json
+```
+
+**Using claude.ai (Pro chat, no Claude Code):**
+
+For each video, do this:
+
+1. Open a new chat. Paste the **entire contents** of
+   `prompts/02_distill_video.md` as your first message — it's only
+   ~50 lines.
+2. In the same message (or as a follow-up), paste the contents of
+   `output/mycreator/video_01_*/transcript.clean.txt`. If the file is
+   very long, attach it instead of pasting — claude.ai accepts `.txt`
+   uploads.
+3. Claude replies with a single JSON object that starts with `{"t":` …
+   and ends with `}`. **Copy that whole object** (no prose, no
+   markdown fences around it) and save it to a new file at
    `distilled/mycreator/video_01.json`.
-4. Repeat for each video. In **Claude Code**, you can speed this up by
-   asking it to read the files itself, e.g.:
+4. Start a fresh chat for `video_02` and repeat. (Fresh chat per
+   video keeps the context small and the output consistent.)
 
-   ```
-   Read prompts/02_distill_video.md, then for each
-   output/mycreator/video_*/transcript.clean.txt run that prompt and
-   write the JSON to distilled/mycreator/video_NN.json. Skip any
-   video_NN.json that already exists.
-   ```
+Tip: if Claude wraps the JSON in a ```json fence, strip the fence
+lines before saving. The downstream scripts expect a raw JSON object.
 
-**Phase 3 — synthesize across videos:**
+---
 
-Paste `prompts/03_synthesize.md` plus all the `video_*.json` files
-into a single Claude conversation. Save the response as
-`distilled/mycreator/synthesis.json` and eyeball it before moving on.
-In Claude Code:
+#### B-2. Synthesize across videos → one `synthesis.json`
+
+**What this round does:** reads *all* of the per-video JSONs at once
+and pulls out the patterns that recur in ≥2 videos. One-offs get
+moved to a `discarded_one_offs` list. This is the "reduce" step and
+the **human review gate** — eyeball the output before paying for the
+final write.
+
+**Inputs:** `prompts/03_synthesize.md` + every
+`distilled/mycreator/video_*.json` you produced in B-1.
+
+**Output:** `distilled/mycreator/synthesis.json`.
+
+**Using Claude Code:**
 
 ```
-Use prompts/03_synthesize.md with all distilled/mycreator/video_*.json
-files as input. Write the result to distilled/mycreator/synthesis.json.
+Now Phase 3. Read prompts/03_synthesize.md as the system prompt,
+then send all distilled/mycreator/video_*.json files (concatenated
+as a JSON array, in numeric order) as the user message. Save the
+single JSON object you get back to distilled/mycreator/synthesis.json.
 ```
 
-**Phase 4 — author the SKILL.md:**
+**Using claude.ai:**
 
-Paste `prompts/04_author_skill.md` plus `synthesis.json` into Claude
-and ask it to follow the prompt. Save the result as
-`distilled/mycreator/SKILL.md`. Then regenerate citations locally:
+1. New chat. Paste `prompts/03_synthesize.md` first.
+2. Paste a JSON array of all the per-video JSONs. The easiest way:
+
+   ```
+   jq -s '.' distilled/mycreator/video_*.json > /tmp/all_videos.json
+   ```
+
+   Then attach `/tmp/all_videos.json` to the chat (or paste its
+   contents if it fits).
+3. Save Claude's JSON reply to `distilled/mycreator/synthesis.json`.
+
+**Review gate:** open `synthesis.json` and read the
+`recurring_heuristics` list. Each item has a `confidence` of `core`,
+`strong`, or `weak`. If the `core` items don't sound like the creator,
+something went wrong upstream — re-check a few `video_NN.json` files
+before continuing.
+
+---
+
+#### B-3. Author the Skill → `SKILL.md`
+
+**What this round does:** turns the synthesis into a reusable
+`SKILL.md` you can load into Claude. Only `core` and `strong`
+patterns become part of the active method; weak ones get parked in an
+appendix.
+
+**Inputs:** `prompts/04_author_skill.md` + `synthesis.json` + a mode
+(`Teacher`, `Reviewer`, or `Advisor` — see "Skill modes" below).
+
+**Output:** `distilled/mycreator/SKILL.md`.
+
+**Using Claude Code:**
+
+```
+Phase 4. Read prompts/04_author_skill.md as the system prompt. Send
+distilled/mycreator/synthesis.json plus the line "MODE: Teacher" as
+the user message. Save the SKILL.md markdown you get back to
+distilled/mycreator/SKILL.md. Leave the {{VERSION}} placeholder in
+the frontmatter — we'll set it next.
+```
+
+**Using claude.ai:**
+
+1. New chat. Paste `prompts/04_author_skill.md`.
+2. Paste `synthesis.json` and add a line: `MODE: Teacher` (or
+   `Reviewer` / `Advisor`).
+3. Save the markdown reply to `distilled/mycreator/SKILL.md`.
+
+**Then generate the citations sidecar** (this part is local, no
+Claude needed):
 
 ```
 make citations PLAYLIST_NAME=mycreator
 ```
 
-**Topical reports on Path B** work the same way — substitute
-`prompts/02_topical_extract.md` and `prompts/04_topical_report.md`.
-**Summaries** use `prompts/02_summary.md` + `prompts/03_summary_rollup.md`.
+This walks `synthesis.json` + the per-video JSONs and writes
+`distilled/mycreator/citations.md`, mapping each claim in `SKILL.md`
+back to the exact video and timestamp it came from.
 
-You end up with the same files (`SKILL.md`, `citations.md`, etc.) as
-Path A — the only difference is who orchestrates the calls.
+---
+
+#### Using the Skill you just built
+
+You now have `distilled/mycreator/SKILL.md`. To use it:
+
+- **In Claude Code:** copy it into `.claude/skills/<name>/SKILL.md`
+  in any project; Claude Code will auto-load it. Ask Claude something
+  in the creator's domain and it will apply the method.
+- **In claude.ai (Pro):** create a Project, upload `SKILL.md` as a
+  project file, and the chat will use it as standing instructions.
+- **Via the API:** send `SKILL.md` as a system prompt.
+
+---
+
+#### Other intents on Path B
+
+The same pattern works for the other outputs — just swap prompts:
+
+| Intent           | Replace 02 prompt with         | Replace 03/04 with                |
+| ---------------- | ------------------------------ | --------------------------------- |
+| `topical-report` | `prompts/02_topical_extract.md` (one per video) | `prompts/04_topical_report.md` (run once on all extracts) |
+| `summary`        | `prompts/02_summary.md` (one per video)         | `prompts/03_summary_rollup.md` (run once on all summaries) |
+| `quote-mining`   | — (no Claude needed: `make quote-mine`)         | —                                 |
+| `stats`          | — (no Claude needed: `make stats`)              | —                                 |
 
 > **Note:** `make eval` (hold-one-out scoring) still needs an API key
-> because it programmatically grades the Skill. Skip it on Path B, or
-> grade by hand using `prompts/05_eval_rubric.md`.
+> — it programmatically grades the Skill against a held-out video.
+> Skip it on Path B, or grade by hand using
+> `prompts/05_eval_rubric.md` (paste the rubric + your `SKILL.md` +
+> a held-out transcript into a chat).
 
 ---
 
