@@ -1,0 +1,64 @@
+name: Bug report
+description: Something broke or behaved unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please **do not paste third-party transcripts**
+        or playlist URLs you do not have rights to share. See the project
+        compliance notes in docs/PRD.md §12.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Brief description of the problem and what you expected.
+      placeholder: "Ran `make extract` and got an SSL error from yt-dlp..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: |
+        Exact command(s) and a minimal input. If the input is a playlist URL
+        you don't have rights to share, describe the playlist instead
+        (~hours, ~videos, has-captions, talking-head vs screen-heavy).
+      placeholder: |
+        1. make extract PLAYLIST="..." PLAYLIST_NAME=demo
+        2. ...
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "macOS 14.5 / Ubuntu 24.04 / ..."
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "python --version"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Trim to the relevant section. Redact transcripts and URLs you can't share.
+      render: shell
+
+  - type: checkboxes
+    id: rights
+    attributes:
+      label: Compliance
+      options:
+        - label: I have not included any third-party transcript content or non-shareable playlist URLs in this report.
+          required: true
