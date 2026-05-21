@@ -61,6 +61,7 @@ import re
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # ── Pretty console ────────────────────────────────────────────────────────────
@@ -95,8 +96,40 @@ def run(cmd: list, capture=True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=capture, text=True)
 
 
+def parse_video_selection(spec: str) -> list[int]:
+    """Parse '10-25', '1,3,5-7', '5' into a sorted list of 1-based indices.
+
+    Raises ValueError on malformed input. Empty/None means "no filter" — the
+    caller should handle that by not calling this function.
+    """
+    indices: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo_s, hi_s = part.split("-", 1)
+            lo, hi = int(lo_s), int(hi_s)
+            if lo < 1 or hi < lo:
+                raise ValueError(f"invalid range '{part}' (must be lo>=1 and hi>=lo)")
+            indices.update(range(lo, hi + 1))
+        else:
+            n = int(part)
+            if n < 1:
+                raise ValueError(f"invalid index '{part}' (must be >= 1)")
+            indices.add(n)
+    if not indices:
+        raise ValueError("empty selection")
+    return sorted(indices)
+
+
 # ── Stage 0: enumerate playlist ───────────────────────────────────────────────
-def enumerate_videos(source: str, is_local: bool, max_videos: int | None):
+def enumerate_videos(
+    source: str,
+    is_local: bool,
+    max_videos: int | None,
+    selection: list[int] | None = None,
+):
     """Return list of dicts: {id, title, url} (or local file entry)."""
     if is_local:
         title = Path(source).stem
@@ -124,9 +157,21 @@ def enumerate_videos(source: str, is_local: bool, max_videos: int | None):
             "title": j.get("title") or vid,
             "url": j.get("url") or f"https://youtu.be/{vid}",
         })
+    total = len(videos)
+    if selection:
+        kept = []
+        for idx in selection:
+            if 1 <= idx <= total:
+                kept.append(videos[idx - 1])
+            else:
+                warn(f"--videos index {idx} out of range (playlist has {total}); skipping.")
+        videos = kept
     if max_videos:
         videos = videos[:max_videos]
-    ok(f"Found {len(videos)} video(s).")
+    if selection:
+        ok(f"Selected {len(videos)} of {total} video(s) via --videos.")
+    else:
+        ok(f"Found {len(videos)} video(s).")
     return videos
 
 
@@ -527,7 +572,17 @@ def main():
     p.add_argument("--whisper-model", default="base",
                    choices=["tiny", "base", "small", "medium"])
     p.add_argument("--scene-threshold", type=float, default=0.4)
-    p.add_argument("--max-videos", type=int, default=None)
+    p.add_argument("--max-videos", type=int, default=None,
+                   help="Cap to the first N videos. Combine with --videos to "
+                        "further trim, or use --videos alone for ranges.")
+    p.add_argument("--videos", default=None,
+                   help="Select specific 1-based indices: '10-25', '5', or "
+                        "'1,3,5-7'. Applied to the playlist order.")
+    p.add_argument("--jobs", type=int, default=1,
+                   help="Process this many videos concurrently. Safe with "
+                        "captions-first extraction (IO-bound); for "
+                        "screen-heavy or --force-whisper, keep at 1 unless "
+                        "you have spare CPU. Default: 1.")
     p.add_argument("--out", default="output")
     p.add_argument("--min-caption-words", type=int, default=100,
                    help="If YouTube captions produce fewer than this many words, "
@@ -544,7 +599,19 @@ def main():
     say(f"\n{C['bold']}{C['cyan']}━━━ Local Playlist Extractor ━━━{C['reset']}")
     say(f"{C['dim']}Mode: {args.mode}  |  Source: {args.source}{C['reset']}\n")
 
-    videos = enumerate_videos(args.source, args.local, args.max_videos)
+    selection: list[int] | None = None
+    if args.videos:
+        try:
+            selection = parse_video_selection(args.videos)
+        except ValueError as e:
+            err(f"--videos: {e}")
+            sys.exit(2)
+
+    if args.jobs < 1:
+        err("--jobs must be >= 1")
+        sys.exit(2)
+
+    videos = enumerate_videos(args.source, args.local, args.max_videos, selection)
     if not videos:
         err("No videos to process.")
         sys.exit(1)
@@ -555,7 +622,7 @@ def main():
     root = Path(args.out) / playlist_name
     root.mkdir(parents=True, exist_ok=True)
 
-    for i, v in enumerate(videos, 1):
+    def process_one(i: int, v: dict) -> None:
         say(f"\n{C['bold']}[{i}/{len(videos)}] {v['title']}{C['reset']}")
         vdir = root / f"video_{i:02d}_{slugify(v['title'])}"
         vdir.mkdir(exist_ok=True)
@@ -572,7 +639,7 @@ def main():
             language=args.whisper_language,
         ):
             warn("Skipping video (no transcript).")
-            continue
+            return
 
         # 2+3. visuals — only for screen-heavy + only if we have a media file
         if args.mode == "screen-heavy":
@@ -596,6 +663,22 @@ def main():
                         f.unlink(missing_ok=True)
             else:
                 warn("No media available for frames; transcript only.")
+
+    # Parallel only when explicitly asked. Whisper + ffmpeg are CPU-bound,
+    # so high --jobs on screen-heavy or --force-whisper will thrash; the
+    # captions-first IO-bound path is the safe place to crank this up.
+    if args.jobs > 1:
+        if args.mode == "screen-heavy" or args.force_whisper:
+            warn(f"--jobs={args.jobs} with mode={args.mode} / force-whisper "
+                 f"may saturate CPU; consider --jobs 1 if your machine struggles.")
+        with ThreadPoolExecutor(max_workers=args.jobs) as ex:
+            futures = [ex.submit(process_one, i, v) for i, v in enumerate(videos, 1)]
+            for fut in as_completed(futures):
+                # Surface worker exceptions instead of silently dropping them.
+                fut.result()
+    else:
+        for i, v in enumerate(videos, 1):
+            process_one(i, v)
 
     write_index(root, playlist_name, videos, args.mode)
     say(f"\n{C['bold']}{C['green']}━━━ Done ━━━{C['reset']}")
