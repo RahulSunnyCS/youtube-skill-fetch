@@ -14,7 +14,7 @@ ifneq ($(strip $(VIDEOS)),)
 EXTRACT_FLAGS += --videos "$(VIDEOS)"
 endif
 
-.PHONY: help scope test1 extract preprocess phase2 phase3 phase4 \
+.PHONY: help scope test1 extract extract-batch preprocess phase2 phase3 phase4 \
         topical summary stats quote-mine screenshots citations \
         diff-synthesis eval clean
 
@@ -24,7 +24,8 @@ help:
 	@echo ""
 	@echo "Extract + prep (local, free):"
 	@echo "  make test1                              - extract one video as sanity check"
-	@echo "  make extract                            - extract full playlist"
+	@echo "  make extract                            - interactive extract (prompts for url, range, jobs)"
+	@echo "  make extract-batch PLAYLIST=... VIDEOS=10-25 JOBS=4   - non-interactive"
 	@echo "  make preprocess PLAYLIST_NAME=...       - clean transcripts"
 	@echo "  make screenshots PLAYLIST_NAME=...      - frames at deictic moments"
 	@echo ""
@@ -54,7 +55,21 @@ scope:
 test1:
 	python3 scripts/extract_playlist.py "$(PLAYLIST)" --mode $(MODE) --max-videos 1 --out $(OUT)
 
+# Only forward a variable to the interactive front-end if the user
+# actually set it (command line or environment) — Makefile defaults
+# should NOT suppress prompts.
+_user_set = $(if $(filter command\ line environment,$(origin $(1))),$($(1)),)
+
 extract:
+	@PLAYLIST="$(call _user_set,PLAYLIST)" \
+	 PLAYLIST_NAME="$(call _user_set,PLAYLIST_NAME)" \
+	 MODE="$(call _user_set,MODE)" \
+	 VIDEOS="$(call _user_set,VIDEOS)" \
+	 JOBS="$(call _user_set,JOBS)" \
+	 OUT="$(OUT)" \
+	 python3 scripts/extract_interactive.py
+
+extract-batch:
 	python3 scripts/extract_playlist.py "$(PLAYLIST)" $(EXTRACT_FLAGS)
 
 preprocess:
